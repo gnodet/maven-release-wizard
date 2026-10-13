@@ -1022,20 +1022,25 @@ def wizard_collect_inputs():
     meta = PROJECTS[project]
     Console().print(f"  [dim]{meta['display_name']} ({meta['category']})[/dim]")
 
-    # Branch selection — default master, but allow e.g. maven-3.x branches
+    # Branch selection — default master, but allow any branch (e.g. maven-3.x)
     repo_dir = Path(os.path.join(REPOS_DIR, project))
     default_branch = meta.get("default_branch", "master")
-    # Offer branch choices: default branch + any known release branches from the registry
     branch_choices = list(dict.fromkeys(
         [default_branch] + meta.get("release_branches", [])
     ))
-    if len(branch_choices) > 1 or not NO_TTY:
+    if len(branch_choices) > 1:
+        # Project has known release branches — show a select list
         branch = questionary.select(
             "Branch to release from:",
             choices=branch_choices,
-        ).ask() if len(branch_choices) > 1 else branch_choices[0]
+        ).ask()
     else:
-        branch = default_branch
+        # Single known branch — still ask, so user can type a different one
+        branch = questionary.text(
+            "Branch to release from:", default=default_branch
+        ).ask()
+    if not branch:
+        sys.exit(0)
 
     # Infer versions from pom.xml on disk (or the default branch if not yet cloned)
     pom_version = read_pom_version(repo_dir)
