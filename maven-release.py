@@ -1038,8 +1038,7 @@ def step_site():
         log_file=c["log_dir"] / "site.log")
 
     print("\n2. SVN archive: LATEST \u2192 versioned...")
-    svn_base = (f"https://svn.apache.org/repos/infra/websites/production"
-                f"/maven/content/{archives}")
+    svn_base = (f"https://svn.apache.org/repos/asf/maven/website/components/{archives}")
     run(["svn", "copy",
          f"{svn_base}/{c['project']}-LATEST",
          f"{svn_base}/{c['project']}-{c['version']}",
@@ -1224,16 +1223,15 @@ def step_finish():
             tui_warn(f"Could not re-enable Release Drafter: {e}")
 
     # 4. SVN site swap
-    svn_base = (f"https://svn.apache.org/repos/infra/websites/production"
-                f"/maven/content/{archives}")
+    svn_base = (f"https://svn.apache.org/repos/asf/maven/website/components/{archives}")
     if confirm_action("Publish live site (SVN copy versioned archive over current)?"):
         try:
             run(["svn", "copy",
                  f"{svn_base}/{c['project']}-{c['version']}",
-                 f"{svn_base}/{c['project']}",
+                 f"{svn_base}/{c['project']}-LATEST",
                  "-m", f"Publish {c['project']}-{c['version']} site"])
             tui_ok("Live site published")
-            tui_link("Live site", f"https://maven.apache.org/{archives}/{c['project']}/")
+            tui_link("Live site", f"https://maven.apache.org/{c['category']}/{c['project']}/")
         except Exception as e:
             tui_warn(f"SVN site swap failed: {e}")
 
