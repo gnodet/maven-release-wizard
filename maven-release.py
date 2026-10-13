@@ -1048,7 +1048,7 @@ def wizard_collect_inputs():
         sys.exit(0)
 
     # Re-infer next version from the chosen release version (user may have changed it)
-    _, auto_next = infer_versions(version + "-SNAPSHOT")
+    _, auto_next = infer_versions(version)
     next_version = questionary.text(
         "Next development version:", default=auto_next
     ).ask()
@@ -1073,17 +1073,19 @@ def wizard_collect_inputs():
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def read_pom_version(repo_dir):
-    """Read <version> from pom.xml in repo_dir. Returns e.g. '4.0.0-beta-7-SNAPSHOT'."""
+    """Read the project <version> from pom.xml in repo_dir (skips <parent> block)."""
     pom = Path(repo_dir) / "pom.xml"
     if not pom.exists():
         return ""
     text = pom.read_text()
-    m = re.search(r"<version>([^<]+)</version>", text)
+    # Strip the <parent>...</parent> block first so we don't pick up the parent version
+    text_no_parent = re.sub(r"<parent>.*?</parent>", "", text, flags=re.DOTALL)
+    m = re.search(r"<version>([^<]+)</version>", text_no_parent)
     return m.group(1).strip() if m else ""
 
 
 def infer_versions(pom_version):
-    """Given a SNAPSHOT pom version, return (release_version, next_dev_version)."""
+    """Given a pom version (with or without -SNAPSHOT), return (release_version, next_dev_version)."""
     v = pom_version.removesuffix("-SNAPSHOT")
     # bump the last numeric segment for the next dev version
     m = re.match(r'^(.*?)(\d+)([^0-9]*)$', v)
