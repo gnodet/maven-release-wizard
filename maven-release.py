@@ -172,6 +172,9 @@ def _ensure_deps():
 
     # Re-launch inside the venv as a subprocess (not execv — execv silently
     # fails when stdin/stdout are weird, e.g. bash process substitution).
+    # When run via process substitution, sys.argv[0] is something like /dev/fd/63
+    # which won't exist on re-launch.  Always fetch the latest from GitHub in
+    # that case so we never run a stale cached copy from a previous session.
     script_path = os.path.abspath(sys.argv[0]) if sys.argv else ""
     if not script_path or not os.path.isfile(script_path):
         import tempfile, urllib.request as _ur
@@ -1107,15 +1110,22 @@ def step_finish():
             tui_warn(f"Could not re-enable Release Drafter: {e}")
 
     # 4. SVN site swap
-    tui_warn("SVN site swap (LATEST \u2192 live) \u2014 do this manually if ATR doesn't handle it:")
     svn_base = (f"https://svn.apache.org/repos/infra/websites/production"
                 f"/maven/content/{archives}")
-    print(f"   svn copy {svn_base}/{c['project']}-{c['version']}")
-    print(f"            {svn_base}/{c['project']}  -m 'Publish live site'")
+    if confirm_action("Publish live site (SVN copy versioned archive over current)?"):
+        try:
+            run(["svn", "copy",
+                 f"{svn_base}/{c['project']}-{c['version']}",
+                 f"{svn_base}/{c['project']}",
+                 "-m", f"Publish {c['project']}-{c['version']} site"])
+            tui_ok("Live site published")
+            tui_link("Live site", f"https://maven.apache.org/{archives}/{c['project']}/")
+        except Exception as e:
+            tui_warn(f"SVN site swap failed: {e}")
 
-    # 5. Maven site index
-    tui_warn(f"Update apache/maven-site {site_index}:")
-    print(f"   Bump version + date for {c['project']} row")
+    # 5. Maven site index \u2014 updated automatically by apache/maven-site update-releases workflow
+    tui_ok("Site index will be updated automatically by apache/maven-site CI")
+    tui_link("Workflow", "https://github.com/apache/maven-site/actions/workflows/update-releases.yml")
 
     # 6. Reporter
     tui_warn("Add release to reporter.apache.org:")
