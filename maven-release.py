@@ -1553,15 +1553,15 @@ def main():
                 label = (f"{r['project']} {r['version']} \u2014 "
                          f"completed: {done} \u2014 next: {r['next_step']}")
                 resume_choices.append(questionary.Choice(label, value=r))
-            resume_choices.append(questionary.Choice("Start a new release", value=None))
+            resume_choices.append(questionary.Choice("Start a new release", value="new"))
             picked = questionary.select(
                 "Found in-progress release(s):",
                 choices=resume_choices,
             ).ask()
             if picked is None:
-                pass  # fall through to normal wizard
-            elif picked is False:
                 sys.exit(0)
+            elif picked == "new":
+                pass  # fall through to normal wizard
             else:
                 project = picked["project"]
                 version = picked["version"]
