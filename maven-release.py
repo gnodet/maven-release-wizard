@@ -422,6 +422,20 @@ def run(cmd, cwd=None, check=True, log_file=None, env=None):
     return result
 
 
+def gh_pom_version(project, branch="HEAD"):
+    """Fetch pom.xml from GitHub and return the project version (skips parent block)."""
+    repo = f"apache/{project}"
+    try:
+        data = gh_api(f"/repos/{repo}/contents/pom.xml?ref={branch}")
+        import base64
+        text = base64.b64decode(data["content"]).decode()
+        text_no_parent = re.sub(r"<parent>.*?</parent>", "", text, flags=re.DOTALL)
+        m = re.search(r"<version>([^<]+)</version>", text_no_parent)
+        return m.group(1).strip() if m else ""
+    except Exception:
+        return ""
+
+
 def find_draft_release(repo, version):
     releases = gh_api(f"/repos/{repo}/releases?per_page=20")
     tag = f"{repo.split('/')[-1]}-{version}"
@@ -1022,28 +1036,36 @@ def wizard_collect_inputs():
     meta = PROJECTS[project]
     Console().print(f"  [dim]{meta['display_name']} ({meta['category']})[/dim]")
 
-    # Branch selection — default master, but allow any branch (e.g. maven-3.x)
+    # Branch — fetch default + maintenance branches from GitHub
     repo_dir = Path(os.path.join(REPOS_DIR, project))
-    default_branch = meta.get("default_branch", "master")
-    branch_choices = list(dict.fromkeys(
-        [default_branch] + meta.get("release_branches", [])
-    ))
+    Console().print("  [dim]Fetching repo info from GitHub...[/dim]")
+    try:
+        repo_info = gh_api(f"/repos/apache/{project}")
+        default_branch = repo_info.get("default_branch", "master")
+        branches_data = gh_api(f"/repos/apache/{project}/branches?per_page=100")
+        branch_names = [b["name"] for b in branches_data]
+        # Maintenance branches: <anything>-N.x, N.x, N.N.x — not feature/fix/dependabot
+        maint_re = re.compile(r'^.+-\d+(\.\d+)*\.x$|^\d+(\.\d+)*\.x$')
+        extra = [b for b in branch_names if b != default_branch and maint_re.match(b)]
+        branch_choices = [default_branch] + sorted(extra, reverse=True)
+    except Exception:
+        branch_choices = ["master"]
+        default_branch = "master"
+
     if len(branch_choices) > 1:
-        # Project has known release branches — show a select list
         branch = questionary.select(
             "Branch to release from:",
             choices=branch_choices,
         ).ask()
     else:
-        # Single known branch — still ask, so user can type a different one
         branch = questionary.text(
             "Branch to release from:", default=default_branch
         ).ask()
     if not branch:
         sys.exit(0)
 
-    # Infer versions from pom.xml on disk (or the default branch if not yet cloned)
-    pom_version = read_pom_version(repo_dir)
+    # Infer versions — prefer local pom (fast), fall back to GitHub (not yet cloned)
+    pom_version = read_pom_version(repo_dir) or gh_pom_version(project, branch)
     default_release, default_next = infer_versions(pom_version) if pom_version else ("", "")
     if pom_version:
         Console().print(f"  [dim]pom.xml: {pom_version} → release {default_release}, next {default_next}[/dim]")
