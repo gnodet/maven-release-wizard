@@ -721,24 +721,12 @@ def step_prereqs():
     except Exception as e:
         tui_warn(f"Could not check Nexus: {e}")
 
-    # 6. Git push credentials via gitbox
-    print("\n6. Setting up gitbox push access...")
+    # 6. Git push access
+    print("\n6. Checking push access...")
     try:
-        # Set push URL to gitbox (Apache GitHub repos don't accept direct HTTPS pushes)
-        gitbox_url = f"https://gitbox.apache.org/repos/asf/{c['project']}.git"
-        run(["git", "remote", "set-url", "--push", "origin", gitbox_url])
-
-        # Store gitbox credentials
-        apache_pass = read_apache_password()
-        encoded = urllib.parse.quote(apache_pass, safe="")
-        store = Path(f"{HOME}/.git-credentials")
-        lines = store.read_text().splitlines(keepends=True) if store.exists() else []
-        lines = [l for l in lines if "gitbox.apache.org" not in l]
-        lines.append(f"https://{apache_id}:{encoded}@gitbox.apache.org\n")
-        store.write_text("".join(lines))
-        store.chmod(0o600)
-        run(["git", "config", "--local", "credential.https://gitbox.apache.org.helper",
-             f"store --file={store}"])
+        # Ensure push URL uses SSH (HTTPS pushes to Apache GitHub repos require extra setup)
+        ssh_url = f"git@github.com:apache/{c['project']}.git"
+        run(["git", "remote", "set-url", "--push", "origin", ssh_url])
 
         # Verify push access with a dry-run
         push_test = subprocess.run(
@@ -746,13 +734,13 @@ def step_prereqs():
             capture_output=True, text=True, cwd=c["repo_dir"]
         )
         if push_test.returncode == 0:
-            tui_ok(f"Push access OK (gitbox)")
+            tui_ok("Push access OK (SSH)")
         else:
             err_msg = (push_test.stderr or push_test.stdout).strip().splitlines()[-1]
-            errors.append("git push to gitbox failed")
+            errors.append("git push failed")
             tui_err(f"Push access failed: {err_msg}")
     except Exception as e:
-        tui_warn(f"Could not set up gitbox push: {e}")
+        tui_warn(f"Could not verify push access: {e}")
 
     # 7. ATR — project exists and current user is an authorized releaser
     print("\n7. Checking ATR project and releaser authorization...")
