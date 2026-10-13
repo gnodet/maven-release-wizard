@@ -829,7 +829,9 @@ def step_prepare():
     gpg_args = f" -Dgpg.passphrase={gpg_pass} -Dgpg.pinentryMode=loopback"
     if gpg_key:
         gpg_args += f" -Dgpg.keyname={gpg_key}"
+    ssh_scm = f"scm:git:git@github.com:apache/{c['project']}.git"
     common = [f"-Dmaven.repo.local={c['local_repo']}",
+              f"-DdeveloperConnectionUrl={ssh_scm}",
               f"-Darguments=-Dmaven.repo.local={c['local_repo']}" + gpg_args]
 
     print("\n3. Dry run...")
