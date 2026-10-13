@@ -770,7 +770,7 @@ def step_prereqs():
     # 8. Java and Maven version (let enforcer rules in the project validate)
     print("\n8. Checking Java and Maven versions (mvn validate)...")
     validate_result = subprocess.run(
-        [MVN, "validate", "-B", "-q"],
+        [MVN, "validate", "-B", "-q", "-Pstaging"],
         capture_output=True, text=True, cwd=c["repo_dir"], env=BASE_ENV
     )
     if validate_result.returncode == 0:
