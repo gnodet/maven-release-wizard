@@ -834,6 +834,7 @@ def step_prepare():
     if gpg_key:
         gpg_args += f" -Dgpg.keyname={gpg_key}"
     common = [f"-Dmaven.repo.local={c['local_repo']}",
+              "-Pstaging",
               f"-Darguments=-Dmaven.repo.local={c['local_repo']}" + gpg_args]
 
     print("\n3. Dry run...")
@@ -887,6 +888,7 @@ def step_perform():
     subprocess.run([
         MVN, "release:perform", "-B",
         f"-Dmaven.repo.local={c['local_repo']}",
+        "-Pstaging",
         f"-Darguments=-Dmaven.repo.local={c['local_repo']}" + gpg_args,
     ], cwd=c["repo_dir"], env=c["env"], capture_output=True, text=True)
 
@@ -910,7 +912,7 @@ def step_perform():
         f"-Dgpg.passphrase={gpg_pass}",
         "-Dgpg.pinentryMode=loopback",
         "-s", SETTINGS,
-        "-Papache-release,push-to-atr",
+        "-Papache-release,push-to-atr,staging",
         "-Datr.createVersion=true",
     ]
     if gpg_key:
