@@ -170,9 +170,22 @@ def _ensure_deps():
             [str(venv_python), "-m", "pip", "install", "--quiet"] + missing
         )
 
-    # Re-exec this script inside the venv — transparent to the user
+    # Re-exec this script inside the venv — transparent to the user.
+    # sys.argv[0] may be /dev/fd/N (bash process substitution) or '-' (piped
+    # stdin) — the fd is gone by the time the new process starts.  In that
+    # case download the canonical script to a stable temp file and exec from
+    # there so the re-launched interpreter has something real to read.
+    script_path = os.path.abspath(sys.argv[0]) if sys.argv else ""
+    if not script_path or not os.path.isfile(script_path):
+        import tempfile, urllib.request as _ur
+        stable = os.path.join(tempfile.gettempdir(), "maven-release.py")
+        url = ("https://raw.githubusercontent.com/gnodet/maven-release-wizard"
+               "/main/maven-release.py")
+        print(f"Re-fetching script from GitHub ...")
+        _ur.urlretrieve(url, stable)
+        script_path = stable
     print("Re-launching inside venv...")
-    os.execv(str(venv_python), [str(venv_python)] + sys.argv)
+    os.execv(str(venv_python), [str(venv_python), script_path] + sys.argv[1:])
 
 
 NO_TTY = False   # set to True by --no-tty
