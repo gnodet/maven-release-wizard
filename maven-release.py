@@ -142,8 +142,8 @@ def _ensure_deps():
     venv_dir = Path(HOME) / ".maven-release-venv"
     venv_python = venv_dir / "bin" / "python3"
 
-    # If we're already inside our venv, just pip-install and return
-    if sys.prefix == str(venv_dir):
+    # If we're already inside our venv (either via sys.prefix or VIRTUAL_ENV env), just install and return
+    if sys.prefix == str(venv_dir) or os.environ.get("VIRTUAL_ENV") == str(venv_dir):
         subprocess.check_call(
             [str(venv_python), "-m", "pip", "install", "--quiet"] + missing
         )
@@ -182,7 +182,10 @@ def _ensure_deps():
         _ur.urlretrieve(url, stable)
         script_path = stable
     print("Re-launching inside venv...")
-    r = subprocess.run([str(venv_python), script_path] + sys.argv[1:])
+    # Pass VIRTUAL_ENV so the child knows it's already inside our venv
+    child_env = {**os.environ, "VIRTUAL_ENV": str(venv_dir),
+                 "PATH": str(venv_dir / "bin") + os.pathsep + os.environ.get("PATH", "")}
+    r = subprocess.run([str(venv_python), script_path] + sys.argv[1:], env=child_env)
     sys.exit(r.returncode)
 
 
