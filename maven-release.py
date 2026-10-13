@@ -1194,7 +1194,8 @@ Thanks,
         tui_link("Start vote manually", f"{c['atr_url']}/compose/{c['project']}/{c['version']}")
         pbcopy = shutil.which("pbcopy")
         if pbcopy:
-            subprocess.run([pbcopy], input=vote_email.encode(), check=False)
+            body = vote_email.split("\n\n", 1)[1] if "\n\n" in vote_email else vote_email
+            subprocess.run([pbcopy], input=body.encode(), check=False)
             tui_ok("Vote email copied to clipboard")
         else:
             print(f"\n   Vote email content:\n")
