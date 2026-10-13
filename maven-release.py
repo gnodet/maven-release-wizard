@@ -712,9 +712,20 @@ def step_prereqs():
     except Exception as e:
         tui_warn(f"Could not check Nexus: {e}")
 
-    # 6. Gitbox credential
-    print("\n6. Setting up gitbox credential...")
+    # 6. Git credentials (GitHub + gitbox)
+    print("\n6. Setting up git credentials...")
     try:
+        # GitHub: use gh CLI as credential helper
+        gh = shutil.which("gh")
+        if gh:
+            run(["git", "config", "--local",
+                 "credential.https://github.com.helper",
+                 f"!{gh} auth git-credential"])
+            tui_ok("GitHub credential configured (gh auth)")
+        else:
+            tui_warn("gh CLI not found — GitHub push may fail")
+
+        # Gitbox: use stored credentials
         apache_pass = read_apache_password()
         encoded = urllib.parse.quote(apache_pass, safe="")
         store = Path(f"{HOME}/.git-credentials")
@@ -734,7 +745,7 @@ def step_prereqs():
             errors.append("gitbox credential verification failed")
             tui_err("gitbox credential verification failed")
     except Exception as e:
-        tui_warn(f"Could not set up gitbox credential: {e}")
+        tui_warn(f"Could not set up git credentials: {e}")
 
     # 7. ATR — project exists and current user is an authorized releaser
     print("\n7. Checking ATR project and releaser authorization...")
