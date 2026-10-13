@@ -1376,18 +1376,75 @@ def build_context(project, version, next_version, branch="master", meta=None):
     log_dir.mkdir(parents=True, exist_ok=True)
 
 
+PROGRESS_FILE = "progress.json"
+
+def _load_progress(log_dir):
+    p = Path(log_dir) / PROGRESS_FILE
+    if p.exists():
+        return json.loads(p.read_text())
+    return {"completed": []}
+
+def _save_progress(log_dir, completed_step):
+    p = Path(log_dir) / PROGRESS_FILE
+    data = _load_progress(log_dir)
+    c = CTX
+    data["project"] = c.get("project", data.get("project", ""))
+    data["version"] = c.get("version", data.get("version", ""))
+    data["branch"] = c.get("branch", data.get("branch", "master"))
+    data["next_version"] = c.get("next_version", data.get("next_version", ""))
+    if completed_step not in data["completed"]:
+        data["completed"].append(completed_step)
+    p.write_text(json.dumps(data, indent=2))
+
+def _find_in_progress_releases():
+    """Scan for log directories with progress files indicating an in-progress release."""
+    results = []
+    tmp = Path("/tmp")
+    for d in tmp.glob("release-*-logs"):
+        progress = d / PROGRESS_FILE
+        if progress.exists():
+            data = json.loads(progress.read_text())
+            completed = data.get("completed", [])
+            all_steps = [k for k in STEPS if k != "6-announce"]
+            if set(completed) >= set(all_steps):
+                continue
+            project = data.get("project", "")
+            version = data.get("version", "")
+            branch = data.get("branch", "master")
+            next_version = data.get("next_version", "")
+            if not project or not version:
+                m = re.match(r"release-(.+)-(\d\S+)-logs", d.name)
+                if not m:
+                    continue
+                project, version = m.group(1), m.group(2)
+            next_step = None
+            for k in all_steps:
+                if k not in completed:
+                    next_step = k
+                    break
+            results.append({
+                "project": project, "version": version,
+                "branch": branch, "next_version": next_version,
+                "completed": completed, "next_step": next_step,
+                "log_dir": d,
+            })
+    return results
+
+
 def run_steps(selected_steps):
     """Run a list of step keys, with inter-step confirmation in interactive mode."""
+    c = ctx()
     for i, key in enumerate(selected_steps):
         fn, desc = STEPS[key]
         t0 = time.time()
         while True:
             try:
                 fn()
+                _save_progress(c["log_dir"], key)
                 elapsed = time.time() - t0
                 if i < len(selected_steps) - 1:
                     if not confirm_continue(key, elapsed):
-                        print("Stopped.")
+                        print("Stopped. Run the script again to resume.")
                         sys.exit(0)
                 break
             except (SystemExit, KeyboardInterrupt):
@@ -1399,6 +1456,7 @@ def run_steps(selected_steps):
                     continue
                 elif action == "skip":
                     tui_warn(f"Skipping step '{key}'")
+                    _save_progress(c["log_dir"], key)
                     break
                 else:
                     sys.exit(1)
@@ -1448,6 +1506,52 @@ def main():
         else:
             run_steps(list(STEPS.keys()))
     else:
+        import questionary
+        from rich.console import Console
+
+        # Check for in-progress releases
+        in_progress = _find_in_progress_releases()
+        if in_progress:
+            resume_choices = []
+            for r in in_progress:
+                done = ", ".join(r["completed"]) or "none"
+                label = (f"{r['project']} {r['version']} \u2014 "
+                         f"completed: {done} \u2014 next: {r['next_step']}")
+                resume_choices.append(questionary.Choice(label, value=r))
+            resume_choices.append(questionary.Choice("Start a new release", value=None))
+            picked = questionary.select(
+                "Found in-progress release(s):",
+                choices=resume_choices,
+            ).ask()
+            if picked is None:
+                pass  # fall through to normal wizard
+            elif picked is False:
+                sys.exit(0)
+            else:
+                project = picked["project"]
+                version = picked["version"]
+                if project not in PROJECTS:
+                    sys.exit(f"\u274c Unknown project '{project}'")
+                branch = picked.get("branch", "master")
+                next_version = picked.get("next_version") or infer_versions(version)[1]
+                build_context(project, version, next_version, branch)
+                all_steps = [k for k in STEPS if k != "6-announce"]
+                remaining = [k for k in all_steps if k not in picked["completed"]]
+                c = ctx()
+                from rich.table import Table
+                t = Table(title="Resume release", show_header=False, box=None, padding=(0, 2))
+                t.add_row("Project",   c["display_name"])
+                t.add_row("Version",   c["version"])
+                t.add_row("Completed", ", ".join(picked["completed"]) or "none")
+                t.add_row("Remaining", ", ".join(remaining))
+                Console().print(t)
+                if not questionary.confirm("Resume?", default=True).ask():
+                    sys.exit(0)
+                run_steps(remaining)
+                from rich import print as rprint
+                rprint("\n[bold green]\U0001f389 All done![/bold green]")
+                return
+
         project, version, next_version, branch, meta, selected_steps = wizard_collect_inputs()
 
         if project not in PROJECTS:
@@ -1457,7 +1561,6 @@ def main():
 
         c = ctx()
         from rich.table import Table
-        from rich.console import Console
         t = Table(title="Release plan", show_header=False, box=None, padding=(0, 2))
         t.add_row("Project",  c["display_name"])
         t.add_row("Branch",   c["branch"])
@@ -1468,7 +1571,6 @@ def main():
         t.add_row("Steps",    ", ".join(selected_steps))
         Console().print(t)
 
-        import questionary
         if not questionary.confirm("Start release?", default=True).ask():
             print("Aborted.")
             sys.exit(0)
