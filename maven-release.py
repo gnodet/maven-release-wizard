@@ -535,15 +535,17 @@ def find_draft_release(repo, version):
 
 
 def get_gpg_passphrase():
-    if not NO_TTY:
-        import questionary
-        return questionary.password("GPG key passphrase:").ask()
+    passphrase = os.environ.get("GPG_PASSPHRASE", "")
+    if passphrase:
+        return passphrase
     p = Path(os.environ.get("GPG_PASSPHRASE_FILE", "/tmp/gpg-pass.txt"))
     if p.exists():
         return p.read_text().strip()
+    if not NO_TTY:
+        import questionary
+        return questionary.password("GPG key passphrase:").ask()
     raise SystemExit(
-        "\u274c GPG passphrase not available. Set GPG_PASSPHRASE_FILE env var "
-        "pointing to a file containing the passphrase."
+        "\u274c GPG passphrase not available. Set GPG_PASSPHRASE or GPG_PASSPHRASE_FILE."
     )
 
 
