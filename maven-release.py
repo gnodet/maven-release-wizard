@@ -422,6 +422,35 @@ def run(cmd, cwd=None, check=True, log_file=None, env=None):
     return result
 
 
+def gh_asf_yaml(project, branch="HEAD"):
+    """Fetch and return parsed fields from .asf.yaml via GitHub API."""
+    try:
+        import base64
+        data = gh_api(f"/repos/apache/{project}/contents/.asf.yaml?ref={branch}")
+        text = base64.b64decode(data["content"]).decode()
+
+        # protected_branches
+        pb_block = re.search(r'protected_branches:\s*\n((?:[ \t]+\S.*\n?)*)', text)
+        protected = (re.findall(r'^[ \t]+(\S+)\s*:', pb_block.group(1), re.MULTILINE)
+                     if pb_block else [])
+
+        # download_path_suffix  (under project.policy)
+        m = re.search(r'download_path_suffix:\s*(\S+)', text)
+        download_path_suffix = m.group(1) if m else ""
+
+        # display name  (under project.metadata.name)
+        m = re.search(r'^\s+name:\s+(.+)', text, re.MULTILINE)
+        display_name = m.group(1).strip() if m else ""
+
+        return {
+            "protected_branches": protected,
+            "download_path_suffix": download_path_suffix,
+            "display_name": display_name,
+        }
+    except Exception:
+        return {"protected_branches": [], "download_path_suffix": "", "display_name": ""}
+
+
 def gh_pom_version(project, branch="HEAD"):
     """Fetch pom.xml from GitHub and return the project version (skips parent block)."""
     repo = f"apache/{project}"
@@ -1036,31 +1065,26 @@ def wizard_collect_inputs():
     meta = PROJECTS[project]
     Console().print(f"  [dim]{meta['display_name']} ({meta['category']})[/dim]")
 
-    # Branch — read protected_branches from .asf.yaml (the authoritative list)
+    # Fetch everything we need from .asf.yaml + repo info in one pass
     repo_dir = Path(os.path.join(REPOS_DIR, project))
     Console().print("  [dim]Fetching repo info from GitHub...[/dim]")
     try:
         repo_info = gh_api(f"/repos/apache/{project}")
         default_branch = repo_info.get("default_branch", "master")
-        # Parse .asf.yaml for protected_branches — the authoritative release branch list
-        asf_yaml_data = gh_api(f"/repos/apache/{project}/contents/.asf.yaml")
-        import base64
-        asf_text = base64.b64decode(asf_yaml_data["content"]).decode()
-        # Extract protected_branches keys (simple line-based parse, no yaml dep needed)
-        protected = re.findall(r'^\s{4}(\S+)\s*:', asf_text, re.MULTILINE)
-        # Only keep lines inside the protected_branches block
-        pb_block = re.search(r'protected_branches:\s*\n((?:\s{4}\S.*\n?)*)', asf_text)
-        if pb_block:
-            protected = re.findall(r'^\s+(\S+)\s*:', pb_block.group(1), re.MULTILINE)
-        else:
-            protected = [default_branch]
-        # default branch first, rest sorted descending
-        branch_choices = [default_branch] + sorted(
-            [b for b in protected if b != default_branch], reverse=True
-        )
     except Exception:
-        branch_choices = ["master"]
         default_branch = "master"
+
+    asf = gh_asf_yaml(project, default_branch)
+    protected = asf["protected_branches"]
+    # Enrich meta with live values from .asf.yaml (override registry defaults)
+    if asf["display_name"]:
+        meta = {**meta, "display_name": asf["display_name"]}
+    if asf["download_path_suffix"]:
+        meta = {**meta, "category": asf["download_path_suffix"]}
+
+    branch_choices = [default_branch] + sorted(
+        [b for b in protected if b != default_branch], reverse=True
+    )
 
     if len(branch_choices) > 1:
         branch = questionary.select(
@@ -1104,7 +1128,7 @@ def wizard_collect_inputs():
     if selected_steps is None:
         sys.exit(0)
 
-    return project, version, next_version, branch, selected_steps
+    return project, version, next_version, branch, meta, selected_steps
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -1132,8 +1156,8 @@ def infer_versions(pom_version):
 
 
 
-def build_context(project, version, next_version, branch="master"):
-    meta = PROJECTS[project]
+def build_context(project, version, next_version, branch="master", meta=None):
+    meta = {**PROJECTS[project], **(meta or {})}
     repo     = f"apache/{project}"
     repo_dir = Path(os.path.join(REPOS_DIR, project))
     tag      = f"{project}-{version}"
@@ -1231,12 +1255,12 @@ def main():
         else:
             run_steps(list(STEPS.keys()))
     else:
-        project, version, next_version, branch, selected_steps = wizard_collect_inputs()
+        project, version, next_version, branch, meta, selected_steps = wizard_collect_inputs()
 
         if project not in PROJECTS:
             sys.exit(f"\u274c Unknown project '{project}'")
 
-        build_context(project, version, next_version, branch)
+        build_context(project, version, next_version, branch, meta)
 
         c = ctx()
         from rich.table import Table
