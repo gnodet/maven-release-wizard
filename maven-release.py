@@ -674,21 +674,20 @@ def step_prereqs():
     print("\n7. Checking ATR project and releaser authorization...")
     try:
         project_key = c["project"]
-        atr_project = atr_api(f"/projects/{project_key}")
+        atr_project = atr_api(f"/project/get/{project_key}")
         tui_ok(f"ATR project '{project_key}' exists")
-        # Check releaser list
-        releasers = atr_api(f"/projects/{project_key}/releasers")
-        releaser_ids = [r.get("asf_uid") or r.get("id") or r.get("username") or ""
-                        for r in (releasers if isinstance(releasers, list)
-                                  else releasers.get("releasers", []))]
-        if apache_id and releaser_ids and apache_id not in releaser_ids:
-            errors.append(f"'{apache_id}' not in ATR releaser list for {project_key}")
-            tui_err(f"You ({apache_id}) are not an authorized ATR releaser")
-            tui_warn(f"Authorized: {', '.join(releaser_ids)}")
-        elif apache_id and releaser_ids:
+        # Check releaser list via committee endpoint
+        committee_key = atr_project.get("project", {}).get("committee_key", "maven")
+        committee = atr_api(f"/committee/get/{committee_key}")
+        release_managers = committee.get("committee", committee).get("release_managers", [])
+        if not release_managers:
+            tui_ok(f"All '{committee_key}' PMC members can release (no restricted list)")
+        elif apache_id in release_managers:
             tui_ok(f"'{apache_id}' is an authorized ATR releaser")
         else:
-            tui_warn("Could not verify ATR releaser list (empty or unexpected format)")
+            errors.append(f"'{apache_id}' not in ATR release_managers for {committee_key}")
+            tui_err(f"You ({apache_id}) are not an authorized ATR releaser")
+            tui_warn(f"Authorized: {', '.join(release_managers)}")
     except Exception as e:
         tui_warn(f"Could not verify ATR project/releasers: {e}")
 
