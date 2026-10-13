@@ -791,9 +791,15 @@ def step_prepare():
         sys.exit(0)
 
     print("\n1. Disabling Release Drafter workflow...")
-    gh_api(f"/repos/{c['repo']}/actions/workflows/{c['release_drafter_wf_id']}/disable",
-           method="PUT")
-    tui_ok("Release Drafter disabled")
+    try:
+        gh_api(f"/repos/{c['repo']}/actions/workflows/{c['release_drafter_wf_id']}/disable",
+               method="PUT")
+        tui_ok("Release Drafter disabled")
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            tui_ok("Release Drafter already disabled")
+        else:
+            raise
 
     print("\n2. Starting GPG agent...")
     subprocess.run(["gpgconf", "--homedir", GNUPGHOME, "--kill", "gpg-agent"],
