@@ -966,7 +966,10 @@ def step_nexus():
     stale = [r["repositoryId"] for r in matching_repos if r["repositoryId"] != target_repo]
 
     if stale:
-        print(f"\n   Stale repos for {c['groupId']}: {stale}")
+        print(f"\n   Stale repos for {c['groupId']}:")
+        for sid in stale:
+            sr = next((r for r in matching_repos if r["repositoryId"] == sid), {})
+            print(f"      {sid} (created: {sr.get('createdDate', sr.get('updatedDate', 'unknown'))})")
         if confirm_action(f"Drop {len(stale)} stale staging repo(s)?"):
             nexus_curl("/service/local/staging/bulk/drop", method="POST", pw=pw,
                        data={"data": {"stagedRepositoryIds": stale, "description": "Dropping incomplete"}})
@@ -979,13 +982,21 @@ def step_nexus():
 
     if not NO_TTY and len(matching_repos) > 1:
         import questionary
+        choices = [
+            questionary.Choice(
+                f"{r['repositoryId']} (created: {r.get('createdDate', r.get('updatedDate', '?'))})",
+                value=r["repositoryId"])
+            for r in matching_repos
+        ]
         target_repo = questionary.select(
             "Which staging repo to close?",
-            choices=[r["repositoryId"] for r in matching_repos],
+            choices=choices,
             default=target_repo,
         ).ask()
 
-    if not confirm_action(f"Close staging repo '{target_repo}'?"):
+    target_date = next((r.get('createdDate', r.get('updatedDate', ''))
+                        for r in open_repos if r["repositoryId"] == target_repo), "")
+    if not confirm_action(f"Close staging repo '{target_repo}' (created: {target_date})?"):
         raise RuntimeError("Aborted by user.")
 
     print(f"\n   Closing {target_repo}...")
