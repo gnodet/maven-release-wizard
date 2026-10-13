@@ -1036,7 +1036,7 @@ def step_site():
     archives = f"{c['category']}-archives"
 
     print("\n1. Building and publishing staged site...")
-    run([MVN, "site", "site-deploy", "-B"], cwd=checkout_dir,
+    run([MVN, "site", "site-deploy", "-B", "-Pstaging"], cwd=checkout_dir,
         log_file=c["log_dir"] / "site.log")
 
     print("\n2. SVN archive: LATEST \u2192 versioned...")
