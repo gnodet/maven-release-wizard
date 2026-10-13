@@ -412,7 +412,10 @@ def nexus_curl(path, method="GET", data=None, pw=None):
         **({"Content-Type": "application/json"} if data else {}),
     })
     with urllib.request.urlopen(req) as r:
-        return json.load(r) if r.status != 204 else {}
+        resp_body = r.read()
+        if not resp_body or r.status == 204:
+            return {}
+        return json.loads(resp_body)
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
