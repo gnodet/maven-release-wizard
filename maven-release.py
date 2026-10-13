@@ -1134,11 +1134,7 @@ def step_finish():
             tui_warn(f"Could not trigger workflow: {e}")
             tui_link("Trigger manually", "https://github.com/apache/maven-site/actions/workflows/update-releases.yml")
 
-    # 6. Reporter
-    tui_warn("Add release to reporter.apache.org:")
-    tui_link("reporter.apache.org", "https://reporter.apache.org/addrelease.html?maven")
-
-    # 7. ANNOUNCE
+    # 6. ANNOUNCE
     if confirm_action("Send [ANNOUNCE] email via ATR API now?", default=False):
         step_announce()
     else:
