@@ -960,25 +960,33 @@ def step_nexus():
         except Exception as e:
             print(f"      {repo_id}: error ({e})")
 
+    # Filter to only repos matching this project's groupId
     profile_prefix = c["groupId"].replace(".", "").lower()
-    stale = [r["repositoryId"] for r in open_repos
-             if r["repositoryId"] != target_repo
-             and r["repositoryId"].startswith(profile_prefix)]
+    matching_repos = [r for r in open_repos if r["repositoryId"].startswith(profile_prefix)]
+    stale = [r["repositoryId"] for r in matching_repos if r["repositoryId"] != target_repo]
+
     if stale:
-        print(f"\n   Dropping stale repos: {stale}")
-        nexus_curl("/service/local/staging/bulk/drop", method="POST", pw=pw,
-                   data={"data": {"stagedRepositoryIds": stale, "description": "Dropping incomplete"}})
+        print(f"\n   Stale repos for {c['groupId']}: {stale}")
+        if confirm_action(f"Drop {len(stale)} stale staging repo(s)?"):
+            nexus_curl("/service/local/staging/bulk/drop", method="POST", pw=pw,
+                       data={"data": {"stagedRepositoryIds": stale, "description": "Dropping incomplete"}})
+            tui_ok(f"Dropped {len(stale)} stale repo(s)")
+        else:
+            tui_warn("Skipped dropping stale repos")
 
     if not target_repo:
         raise RuntimeError("Could not identify complete staging repo \u2014 check Nexus manually.")
 
-    if not NO_TTY and len(open_repos) > 1:
+    if not NO_TTY and len(matching_repos) > 1:
         import questionary
         target_repo = questionary.select(
             "Which staging repo to close?",
-            choices=[r["repositoryId"] for r in open_repos],
+            choices=[r["repositoryId"] for r in matching_repos],
             default=target_repo,
         ).ask()
+
+    if not confirm_action(f"Close staging repo '{target_repo}'?"):
+        raise RuntimeError("Aborted by user.")
 
     print(f"\n   Closing {target_repo}...")
     nexus_curl("/service/local/staging/bulk/close", method="POST", pw=pw,
