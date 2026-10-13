@@ -960,7 +960,10 @@ def step_nexus():
         except Exception as e:
             print(f"      {repo_id}: error ({e})")
 
-    stale = [r["repositoryId"] for r in open_repos if r["repositoryId"] != target_repo]
+    profile_prefix = c["groupId"].replace(".", "").lower()
+    stale = [r["repositoryId"] for r in open_repos
+             if r["repositoryId"] != target_repo
+             and r["repositoryId"].startswith(profile_prefix)]
     if stale:
         print(f"\n   Dropping stale repos: {stale}")
         nexus_curl("/service/local/staging/bulk/drop", method="POST", pw=pw,
