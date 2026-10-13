@@ -630,13 +630,19 @@ def step_prereqs():
     try:
         repos = nexus_curl("/service/local/staging/profile_repositories")
         open_repos = [r for r in repos.get("data", []) if r["type"] == "open"]
-        if open_repos:
-            tui_warn(f"Found {len(open_repos)} open staging repo(s) \u2014 drop them first:")
-            for r in open_repos:
+        # Filter to repos matching this project's groupId prefix
+        profile_prefix = c["groupId"].replace(".", "").lower()
+        matching = [r for r in open_repos if r["repositoryId"].startswith(profile_prefix)]
+        other = [r for r in open_repos if not r["repositoryId"].startswith(profile_prefix)]
+        if matching:
+            tui_warn(f"Found {len(matching)} open staging repo(s) for {c['groupId']} \u2014 drop them first:")
+            for r in matching:
                 print(f"   {r['repositoryId']} (updated: {r.get('updatedDate', '')})")
-            errors.append(f"{len(open_repos)} stale Nexus staging repo(s)")
-        else:
+            errors.append(f"{len(matching)} stale Nexus staging repo(s)")
+        elif not open_repos:
             tui_ok("Nexus is clean")
+        else:
+            tui_ok(f"Nexus is clean (ignoring {len(other)} unrelated repo(s))")
     except Exception as e:
         tui_warn(f"Could not check Nexus: {e}")
 
