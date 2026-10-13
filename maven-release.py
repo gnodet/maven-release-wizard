@@ -319,6 +319,13 @@ def read_atr_pat():
 
 def gh_token():
     token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        # Try gh CLI (handles keyring, env, and file-based token storage)
+        gh = shutil.which("gh")
+        if gh:
+            r = subprocess.run([gh, "auth", "token"], capture_output=True, text=True)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip()
     if not token and GH_TOKEN_FILE.exists():
         text = GH_TOKEN_FILE.read_text()
         if not text.strip().startswith("hosts:"):
@@ -328,7 +335,7 @@ def gh_token():
             token = m.group(1) if m else ""
     if not token:
         raise SystemExit(
-            "\u274c No GitHub token. Set GITHUB_TOKEN or MAVEN_RELEASE_GH_TOKEN."
+            "\u274c No GitHub token. Set GITHUB_TOKEN or run 'gh auth login'."
         )
     return token
 
