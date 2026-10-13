@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generic Maven shared-component / plugin release wizard.
+ASF Maven release wizard — auto-discovers project metadata from .asf.yaml and pom.xml.
 
 Interactive (default):
     python3 maven-release.py
@@ -18,64 +18,10 @@ Steps (run in order):
     5-vote       Generate release notes Gist + start ATR vote
     6-finish     Post-vote: promote Nexus, publish GitHub release, site swap
     6-announce   Send ANNOUNCE email via ATR API
-
-Project registry (add new projects in the PROJECTS dict below).
 """
 
 import sys, os, re, subprocess, json, urllib.request, urllib.parse, argparse, time, shutil, hashlib
 from pathlib import Path
-
-# ── Project registry ────────────────────────────────────────────────────────────
-PROJECTS = {
-    "maven-archiver": {
-        "category":              "shared",
-        "groupId":               "org.apache.maven.shared",
-        "display_name":          "Apache Maven Archiver",
-        "release_drafter_wf_id": 161489861,
-    },
-    "maven-jar-plugin": {
-        "category":              "plugins",
-        "groupId":               "org.apache.maven.plugins",
-        "display_name":          "Apache Maven JAR Plugin",
-        "release_drafter_wf_id": 19931017,
-    },
-    "maven-filtering": {
-        "category":              "shared",
-        "groupId":               "org.apache.maven.shared",
-        "display_name":          "Apache Maven Filtering",
-        "release_drafter_wf_id": 30160804,
-    },
-    "maven-resources-plugin": {
-        "category":              "plugins",
-        "groupId":               "org.apache.maven.plugins",
-        "display_name":          "Apache Maven Resources Plugin",
-        "release_drafter_wf_id": 27273008,
-    },
-    "maven-clean-plugin": {
-        "category":              "plugins",
-        "groupId":               "org.apache.maven.plugins",
-        "display_name":          "Apache Maven Clean Plugin",
-        "release_drafter_wf_id": 137478710,
-    },
-    "maven-compiler-plugin": {
-        "category":              "plugins",
-        "groupId":               "org.apache.maven.plugins",
-        "display_name":          "Apache Maven Compiler Plugin",
-        "release_drafter_wf_id": 19504154,
-    },
-    "maven-install-plugin": {
-        "category":              "plugins",
-        "groupId":               "org.apache.maven.plugins",
-        "display_name":          "Apache Maven Install Plugin",
-        "release_drafter_wf_id": 142127453,
-    },
-    "maven-deploy-plugin": {
-        "category":              "plugins",
-        "groupId":               "org.apache.maven.plugins",
-        "display_name":          "Apache Maven Deploy Plugin",
-        "release_drafter_wf_id": 31852205,
-    },
-}
 
 # ── Toolchain — all overridable via env vars ────────────────────────────────────
 #
@@ -214,7 +160,7 @@ def tui_header():
     from rich.panel import Panel
     from rich.text import Text
     c = console()
-    t = Text(f"\U0001f680 Maven Release Wizard ({SCRIPT_VERSION})", style="bold cyan")
+    t = Text(f"\U0001f680 ASF Release Wizard ({SCRIPT_VERSION})", style="bold cyan")
     c.print(Panel(t, border_style="cyan"))
 
 
@@ -474,13 +420,18 @@ def gh_asf_yaml(project, branch="HEAD"):
         m = re.search(r'^\s+name:\s+(.+)', text, re.MULTILINE)
         display_name = m.group(1).strip() if m else ""
 
+        # committee  (under project.metadata.committee)
+        m = re.search(r'committee:\s*(\S+)', text)
+        committee = m.group(1).strip() if m else ""
+
         return {
             "protected_branches": protected,
             "download_path_suffix": download_path_suffix,
             "display_name": display_name,
+            "committee": committee,
         }
     except Exception:
-        return {"protected_branches": [], "download_path_suffix": "", "display_name": ""}
+        return {"protected_branches": [], "download_path_suffix": "", "display_name": "", "committee": ""}
 
 
 def gh_pom_version(project, branch="HEAD"):
@@ -495,6 +446,68 @@ def gh_pom_version(project, branch="HEAD"):
         return m.group(1).strip() if m else ""
     except Exception:
         return ""
+
+
+def read_pom_group_id(repo_dir):
+    """Read the project <groupId> from pom.xml (skips <parent> block)."""
+    pom = Path(repo_dir) / "pom.xml"
+    if not pom.exists():
+        return ""
+    text = pom.read_text()
+    text_no_parent = re.sub(r"<parent>.*?</parent>", "", text, flags=re.DOTALL)
+    m = re.search(r"<groupId>([^<]+)</groupId>", text_no_parent)
+    return m.group(1).strip() if m else ""
+
+
+def gh_pom_group_id(project, branch="HEAD"):
+    """Fetch groupId from pom.xml via GitHub API (skips <parent> block)."""
+    try:
+        import base64
+        data = gh_api(f"/repos/apache/{project}/contents/pom.xml?ref={branch}")
+        text = base64.b64decode(data["content"]).decode()
+        text_no_parent = re.sub(r"<parent>.*?</parent>", "", text, flags=re.DOTALL)
+        m = re.search(r"<groupId>([^<]+)</groupId>", text_no_parent)
+        return m.group(1).strip() if m else ""
+    except Exception:
+        return ""
+
+
+def find_release_drafter_wf(repo):
+    """Find the Release Drafter workflow ID for a GitHub repo."""
+    try:
+        workflows = gh_api(f"/repos/{repo}/actions/workflows")
+        for wf in workflows.get("workflows", []):
+            path = wf.get("path", "").lower()
+            name = wf.get("name", "").lower()
+            if "release-drafter" in path or "release-drafter" in name or "release.drafter" in name:
+                return wf["id"]
+    except Exception:
+        pass
+    return None
+
+
+def discover_project_meta(project, branch="HEAD"):
+    """Auto-discover project metadata from .asf.yaml, pom.xml, and GitHub API."""
+    repo_dir = Path(os.path.join(REPOS_DIR, project))
+    asf = gh_asf_yaml(project, branch)
+
+    display_name = asf.get("display_name") or project
+    category = asf.get("download_path_suffix") or ""
+    committee = asf.get("committee") or ""
+
+    group_id = read_pom_group_id(repo_dir) or gh_pom_group_id(project, branch)
+
+    repo = f"apache/{project}"
+    release_drafter_wf_id = find_release_drafter_wf(repo)
+
+    return {
+        "display_name":          display_name,
+        "category":              category,
+        "committee":             committee,
+        "groupId":               group_id,
+        "release_drafter_wf_id": release_drafter_wf_id,
+        "protected_branches":    asf.get("protected_branches", []),
+    }
 
 
 def _generate_release_summary(c, body):
@@ -593,14 +606,15 @@ def step_prereqs():
     if "atr_sync" not in asf_yaml:
         errors.append(".asf.yaml missing 'atr_sync: true'")
         tui_err(".asf.yaml missing 'atr_sync: true'")
+        committee = c.get("committee", "???")
         print(f"""   Add to .asf.yaml:
    project:
      metadata:
        key: {c['project']}
-       committee: maven
+       committee: {committee}
      policy:
        github_repository_name: {c['project']}
-       download_path_suffix: {c['category']}
+       download_path_suffix: {c.get('category', '???')}
      features:
        atr_sync: true""")
     else:
@@ -660,23 +674,23 @@ def step_prereqs():
                 tui_err(f"Found {len(fingerprints)} secret keys \u2014 set git config user.signingkey to select one")
                 tui_warn("Example: git config --global user.signingkey <FINGERPRINT>")
     if fpr is not None:
-        # 4a. Key in dist.apache.org KEYS file
+        # 4a. Key in KEYS file
+        committee = c.get("committee", "maven")
+        keys_url = f"https://downloads.apache.org/{committee}/KEYS"
         print(f"   Checking KEYS file for {fpr}...")
         try:
-            req = urllib.request.Request(
-                "https://dist.apache.org/repos/dist/release/maven/KEYS"
-            )
+            req = urllib.request.Request(keys_url)
             with urllib.request.urlopen(req, timeout=15) as r:
                 keys_text = r.read().decode(errors="replace")
             key_id_16 = fpr[-16:]
             key_id_8  = fpr[-8:]
             if fpr in keys_text or key_id_16 in keys_text or key_id_8 in keys_text:
-                tui_ok("Key found in dist.apache.org/repos/dist/release/maven/KEYS")
+                tui_ok(f"Key found in {keys_url}")
             else:
-                errors.append(f"GPG key {fpr} NOT found in Maven KEYS file")
+                errors.append(f"GPG key {fpr} NOT found in {keys_url}")
                 tui_err(f"Key {fpr} not in KEYS file!")
                 tui_warn("Add it: gpg --list-sigs <keyid> >> KEYS && gpg --armor --export <keyid> >> KEYS")
-                tui_link("KEYS file", "https://github.com/apache/maven-parent/blob/master/KEYS")
+                tui_link("KEYS file", keys_url)
         except Exception as e:
             tui_warn(f"Could not fetch KEYS file: {e}")
 
@@ -812,15 +826,19 @@ def step_prepare():
         sys.exit(0)
 
     print("\n1. Disabling Release Drafter workflow...")
-    try:
-        gh_api(f"/repos/{c['repo']}/actions/workflows/{c['release_drafter_wf_id']}/disable",
-               method="PUT")
-        tui_ok("Release Drafter disabled")
-    except urllib.error.HTTPError as e:
-        if e.code == 403:
-            tui_ok("Release Drafter already disabled")
-        else:
-            raise
+    wf_id = c.get("release_drafter_wf_id")
+    if wf_id:
+        try:
+            gh_api(f"/repos/{c['repo']}/actions/workflows/{wf_id}/disable",
+                   method="PUT")
+            tui_ok("Release Drafter disabled")
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                tui_ok("Release Drafter already disabled")
+            else:
+                raise
+    else:
+        tui_warn("No Release Drafter workflow found — skipping")
 
     print("\n2. Starting GPG agent...")
     subprocess.run(["gpgconf", "--homedir", GNUPGHOME, "--kill", "gpg-agent"],
@@ -1040,7 +1058,8 @@ def step_site():
         log_file=c["log_dir"] / "site.log")
 
     print("\n2. SVN archive: LATEST \u2192 versioned...")
-    svn_base = (f"https://svn.apache.org/repos/asf/maven/website/components/{archives}")
+    committee = c.get("committee", "maven")
+    svn_base = (f"https://svn.apache.org/repos/asf/{committee}/website/components/{archives}")
     run(["svn", "copy",
          f"{svn_base}/{c['project']}-LATEST",
          f"{svn_base}/{c['project']}-{c['version']}",
@@ -1048,7 +1067,7 @@ def step_site():
 
     tui_ok("Site staged!")
     tui_link("Staged site",
-             f"https://maven.apache.org/{archives}/{c['project']}-{c['version']}/")
+             f"https://{c.get('committee', 'maven')}.apache.org/{archives}/{c['project']}-{c['version']}/")
 
 
 # ── Step 5: Vote ──────────────────────────────────────────────────────────────
@@ -1124,15 +1143,20 @@ def step_vote():
     nexus_base = f"https://repository.apache.org/content/repositories/{staging_id}"
     source_url = (f"{nexus_base}/{group_path}/{c['project']}/{c['version']}"
                   f"/{c['project']}-{c['version']}-source-release.zip")
-    staged_site = f"https://maven.apache.org/{archives}/{c['project']}-{c['version']}/"
+    committee = c.get("committee", "maven")
+    staged_site = f"https://{committee}.apache.org/{archives}/{c['project']}-{c['version']}/"
     apache_id = read_apache_id()
 
     atr_vote_url = f"{c['atr_url']}/vote/{c['project']}/{c['version']}"
 
-    vote_email = f"""To: dev@maven.apache.org
+    committee = c.get("committee", "maven")
+    committee_title = committee.title()
+    keys_url = f"https://downloads.apache.org/{committee}/KEYS"
+
+    vote_email = f"""To: dev@{committee}.apache.org
 Subject: [VOTE] Release {c['display_name']} version {c['version']}
 
-Hello Maven,
+Hello {committee_title},
 
 I'd like to call a vote on releasing the following artifacts as \
 {c['display_name']} {c['version']}.
@@ -1141,7 +1165,7 @@ The release candidate page, including downloads, can be found at:
 {atr_vote_url}
 
 The release artifacts are signed with one or more OpenPGP keys from:
-https://downloads.apache.org/maven/KEYS
+{keys_url}
 
 Release notes:
 {gist_url}
@@ -1157,7 +1181,7 @@ Staging site:
 {staged_site}
 
 Guide to testing staged releases:
-https://maven.apache.org/guides/development/guide-testing-releases.html
+https://{committee}.apache.org/guides/development/guide-testing-releases.html
 
 Please review the release candidate and vote accordingly.
 
@@ -1181,7 +1205,7 @@ Thanks,
         atr_api("/vote/start", {
             "project": c["project"],
             "version": c["version"],
-            "email_to": "dev@maven.apache.org",
+            "email_to": f"dev@{committee}.apache.org",
             "body": vote_email,
             "automatic_resolve_when_finished": False,
             "automatic_publish_when_resolved": False,
@@ -1242,16 +1266,20 @@ def step_finish():
         tui_link("GitHub releases", f"https://github.com/{c['repo']}/releases")
 
     # 3. Re-enable Release Drafter
-    if confirm_action("Re-enable Release Drafter workflow?"):
+    wf_id = c.get("release_drafter_wf_id")
+    if wf_id and confirm_action("Re-enable Release Drafter workflow?"):
         try:
-            gh_api(f"/repos/{c['repo']}/actions/workflows/{c['release_drafter_wf_id']}/enable",
+            gh_api(f"/repos/{c['repo']}/actions/workflows/{wf_id}/enable",
                    method="PUT")
             tui_ok("Release Drafter re-enabled")
         except Exception as e:
             tui_warn(f"Could not re-enable Release Drafter: {e}")
+    elif not wf_id:
+        tui_warn("No Release Drafter workflow found — skipping")
 
     # 4. SVN site swap
-    svn_base = (f"https://svn.apache.org/repos/asf/maven/website/components/{archives}")
+    committee = c.get("committee", "maven")
+    svn_base = (f"https://svn.apache.org/repos/asf/{committee}/website/components/{archives}")
     if confirm_action("Publish live site (SVN copy versioned archive over current)?"):
         try:
             run(["svn", "copy",
@@ -1259,12 +1287,13 @@ def step_finish():
                  f"{svn_base}/{c['project']}-LATEST",
                  "-m", f"Publish {c['project']}-{c['version']} site"])
             tui_ok("Live site published")
-            tui_link("Live site", f"https://maven.apache.org/{c['category']}/{c['project']}/")
+            tui_link("Live site", f"https://{c.get('committee', 'maven')}.apache.org/{c['category']}/{c['project']}/")
         except Exception as e:
             tui_warn(f"SVN site swap failed: {e}")
 
-    # 5. Maven site index \u2014 trigger the update-releases workflow
-    if confirm_action("Trigger maven-site release metadata update?"):
+    # 5. Site index update \u2014 trigger the update-releases workflow (Maven-specific)
+    committee = c.get("committee", "maven")
+    if committee == "maven" and confirm_action("Trigger maven-site release metadata update?"):
         try:
             gh_api("/repos/apache/maven-site/actions/workflows/update-releases.yml/dispatches",
                    method="POST", data={"ref": "master"})
@@ -1284,14 +1313,16 @@ def step_finish():
 def step_announce():
     c = ctx()
     tui_step_banner("6-announce", "Send ANNOUNCE email")
-    announce_body = f"""The Apache Maven team is pleased to announce the release of {c['display_name']} version {c['version']}.
+    committee = c.get("committee", "maven")
+    committee_title = committee.title()
+    announce_body = f"""The Apache {committee_title} team is pleased to announce the release of {c['display_name']} version {c['version']}.
 
 Release notes: https://github.com/{c['repo']}/releases/tag/{c['tag']}
 
-Download: https://maven.apache.org/{c['category']}/{c['project']}/download.cgi
+Download: https://{committee}.apache.org/{c['category']}/{c['project']}/download.cgi
 
 Regards,
-The Apache Maven Team
+The Apache {committee_title} Team
 """
     try:
         atr_api("/release/announce", {
@@ -1323,6 +1354,23 @@ STEPS = {
 
 # ── Interactive wizard ─────────────────────────────────────────────────────────
 
+def _detect_project_from_cwd():
+    """Try to detect project name from current directory's git remote."""
+    try:
+        r = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True
+        )
+        if r.returncode == 0:
+            url = r.stdout.strip()
+            m = re.search(r'apache/([^/.]+?)(?:\.git)?$', url)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return ""
+
+
 def wizard_collect_inputs():
     """Full TUI wizard to collect project, version, and steps to run."""
     import questionary
@@ -1330,32 +1378,26 @@ def wizard_collect_inputs():
 
     tui_header()
 
-    project = questionary.select(
-        "Project:",
-        choices=list(PROJECTS.keys()),
+    detected = _detect_project_from_cwd()
+    project = questionary.text(
+        "Project (GitHub repo name without 'apache/'):",
+        default=detected,
     ).ask()
     if not project:
         sys.exit(0)
 
-    meta = PROJECTS[project]
-    Console().print(f"  [dim]{meta['display_name']} ({meta['category']})[/dim]")
-
-    # Fetch everything we need from .asf.yaml + repo info in one pass
-    repo_dir = Path(os.path.join(REPOS_DIR, project))
-    Console().print("  [dim]Fetching repo info from GitHub...[/dim]")
+    Console().print("  [dim]Fetching project info from GitHub...[/dim]")
     try:
         repo_info = gh_api(f"/repos/apache/{project}")
         default_branch = repo_info.get("default_branch", "master")
     except Exception:
         default_branch = "master"
 
-    asf = gh_asf_yaml(project, default_branch)
-    protected = asf["protected_branches"]
-    # Enrich meta with live values from .asf.yaml (override registry defaults)
-    if asf["display_name"]:
-        meta = {**meta, "display_name": asf["display_name"]}
-    if asf["download_path_suffix"]:
-        meta = {**meta, "category": asf["download_path_suffix"]}
+    meta = discover_project_meta(project, default_branch)
+    Console().print(f"  [dim]{meta['display_name']} ({meta.get('category', '?')})[/dim]")
+
+    repo_dir = Path(os.path.join(REPOS_DIR, project))
+    protected = meta.get("protected_branches", [])
 
     branch_choices = [default_branch] + sorted(
         [b for b in protected if b != default_branch], reverse=True
@@ -1432,7 +1474,8 @@ def infer_versions(pom_version):
 
 
 def build_context(project, version, next_version, branch="master", meta=None):
-    meta = {**PROJECTS[project], **(meta or {})}
+    if meta is None:
+        meta = discover_project_meta(project, branch)
     repo     = f"apache/{project}"
     repo_dir = Path(os.path.join(REPOS_DIR, project))
     tag      = f"{project}-{version}"
@@ -1444,11 +1487,12 @@ def build_context(project, version, next_version, branch="master", meta=None):
         "tag":                   tag,
         "repo":                  repo,
         "repo_dir":              repo_dir,
-        "category":              meta["category"],
-        "groupId":               meta["groupId"],
-        "display_name":          meta["display_name"],
-        "release_drafter_wf_id": meta["release_drafter_wf_id"],
-        "branch":                meta.get("default_branch", branch),
+        "category":              meta.get("category", ""),
+        "committee":             meta.get("committee", ""),
+        "groupId":               meta.get("groupId", ""),
+        "display_name":          meta.get("display_name", project),
+        "release_drafter_wf_id": meta.get("release_drafter_wf_id"),
+        "branch":                branch,
         "atr_url":               "https://releases.apache.org",
         "local_repo":            Path(f"{HOME}/.m2/repository-release-{project}-{version}"),
         "log_dir":               log_dir,
@@ -1572,9 +1616,6 @@ def main():
             parser.error("--no-tty requires --project and --version")
         if not args.step and not args.all:
             parser.error("--no-tty requires --step or --all")
-        if args.project not in PROJECTS:
-            sys.exit(f"\u274c Unknown project '{args.project}'. Known: {', '.join(PROJECTS)}")
-
         version = args.version
         m = re.match(r'^(.*?)(\d+)([^0-9]*)$', version)
         next_version = (args.next_version or
@@ -1612,8 +1653,6 @@ def main():
             else:
                 project = picked["project"]
                 version = picked["version"]
-                if project not in PROJECTS:
-                    sys.exit(f"\u274c Unknown project '{project}'")
                 branch = picked.get("branch", "master")
                 next_version = picked.get("next_version") or infer_versions(version)[1]
                 build_context(project, version, next_version, branch)
@@ -1635,9 +1674,6 @@ def main():
                 return
 
         project, version, next_version, branch, meta, selected_steps = wizard_collect_inputs()
-
-        if project not in PROJECTS:
-            sys.exit(f"\u274c Unknown project '{project}'")
 
         build_context(project, version, next_version, branch, meta)
 
