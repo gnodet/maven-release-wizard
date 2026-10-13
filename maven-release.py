@@ -691,6 +691,18 @@ def step_prereqs():
     except Exception as e:
         tui_warn(f"Could not verify ATR project/releasers: {e}")
 
+    # Read required versions from pom.xml
+    pom_path = c["repo_dir"] / "pom.xml"
+    pom_text = pom_path.read_text() if pom_path.exists() else ""
+    required_java = None
+    required_maven = None
+    m = re.search(r"<javaVersion>(\d+)</javaVersion>", pom_text)
+    if m:
+        required_java = int(m.group(1))
+    m = re.search(r"<mavenVersion>([^<]+)</mavenVersion>", pom_text)
+    if m:
+        required_maven = m.group(1).strip()
+
     # 8. Java version
     print("\n8. Checking Java version...")
     try:
@@ -705,11 +717,14 @@ def step_prereqs():
             major = int(m.group(1))
             if major == 1:
                 major = int(m.group(2) or 0)
-            if major >= 11:
-                tui_ok(f"Java {major} \u2014 {java_ver_str.strip()}")
+            if required_java and major < required_java:
+                errors.append(f"Java {major} is too old (project requires \u2265 {required_java})")
+                tui_err(f"Java {major} too old \u2014 project requires \u2265 {required_java}, set JAVA_HOME")
             else:
-                errors.append(f"Java {major} is too old (need \u2265 11)")
-                tui_err(f"Java {major} too old \u2014 set JAVA_HOME to JDK 11+")
+                label = f"Java {major} \u2014 {java_ver_str.strip()}"
+                if required_java:
+                    label += f" (project requires \u2265 {required_java})"
+                tui_ok(label)
         else:
             tui_warn(f"Could not parse Java version: {java_ver_str}")
     except Exception as e:
@@ -725,12 +740,22 @@ def step_prereqs():
         mvn_ver_str = (mvn_result.stdout or mvn_result.stderr).splitlines()[0]
         m = re.search(r'Apache Maven (\d+)\.(\d+)\.(\d+)', mvn_ver_str)
         if m:
-            major, minor, patch_v = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            if (major, minor, patch_v) >= (3, 6, 3):
-                tui_ok(f"Maven {major}.{minor}.{patch_v} \u2014 {mvn_ver_str.strip()}")
+            mvn_ver = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+            if required_maven:
+                # Extract major.minor.patch from required version for comparison
+                rm = re.search(r'(\d+)\.(\d+)\.(\d+)', required_maven)
+                if rm:
+                    req_tuple = (int(rm.group(1)), int(rm.group(2)), int(rm.group(3)))
+                    cur_tuple = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                    if cur_tuple < req_tuple:
+                        errors.append(f"Maven {mvn_ver} is too old (project requires \u2265 {required_maven})")
+                        tui_err(f"Maven {mvn_ver} too old \u2014 project requires \u2265 {required_maven}")
+                    else:
+                        tui_ok(f"Maven {mvn_ver} \u2014 {mvn_ver_str.strip()} (project requires \u2265 {required_maven})")
+                else:
+                    tui_ok(f"Maven {mvn_ver} \u2014 {mvn_ver_str.strip()} (project requires {required_maven})")
             else:
-                errors.append(f"Maven {major}.{minor}.{patch_v} is too old (need \u2265 3.6.3)")
-                tui_err(f"Maven {major}.{minor}.{patch_v} too old \u2014 upgrade to 3.6.3+")
+                tui_ok(f"Maven {mvn_ver} \u2014 {mvn_ver_str.strip()}")
         else:
             tui_warn(f"Could not parse Maven version: {mvn_ver_str}")
     except Exception as e:
