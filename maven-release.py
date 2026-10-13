@@ -1123,9 +1123,16 @@ def step_finish():
         except Exception as e:
             tui_warn(f"SVN site swap failed: {e}")
 
-    # 5. Maven site index \u2014 updated automatically by apache/maven-site update-releases workflow
-    tui_ok("Site index will be updated automatically by apache/maven-site CI")
-    tui_link("Workflow", "https://github.com/apache/maven-site/actions/workflows/update-releases.yml")
+    # 5. Maven site index \u2014 trigger the update-releases workflow
+    if confirm_action("Trigger maven-site release metadata update?"):
+        try:
+            gh_api("/repos/apache/maven-site/actions/workflows/update-releases.yml/dispatches",
+                   method="POST", data={"ref": "master"})
+            tui_ok("Triggered apache/maven-site update-releases workflow")
+            tui_link("Workflow run", "https://github.com/apache/maven-site/actions/workflows/update-releases.yml")
+        except Exception as e:
+            tui_warn(f"Could not trigger workflow: {e}")
+            tui_link("Trigger manually", "https://github.com/apache/maven-site/actions/workflows/update-releases.yml")
 
     # 6. Reporter
     tui_warn("Add release to reporter.apache.org:")
