@@ -462,8 +462,8 @@ def step_prereqs():
             cwd=Path(REPOS_DIR))
     else:
         print("1. Syncing local repo...")
-        run(["git", "checkout", "master"])
-        run(["git", "pull", "origin", "master"])
+        run(["git", "checkout", c["branch"]])
+        run(["git", "pull", "origin", c["branch"]])
     tui_ok("Repo ready")
 
     # 2. Check .asf.yaml
@@ -624,7 +624,7 @@ def step_prepare():
         log_file=c["log_dir"] / "prepare.log")
 
     print("\n5. Verifying...")
-    run(["git", "log", "--oneline", "origin/master", "-5"])
+    run(["git", "log", "--oneline", f"origin/{c['branch']}", "-5"])
     run(["git", "ls-remote", "origin", f"refs/tags/{c['tag']}"])
 
     tui_ok("release:prepare complete!")
@@ -1022,15 +1022,35 @@ def wizard_collect_inputs():
     meta = PROJECTS[project]
     Console().print(f"  [dim]{meta['display_name']} ({meta['category']})[/dim]")
 
-    version = questionary.text("Release version:", default="").ask()
+    # Branch selection — default master, but allow e.g. maven-3.x branches
+    repo_dir = Path(os.path.join(REPOS_DIR, project))
+    default_branch = meta.get("default_branch", "master")
+    # Offer branch choices: default branch + any known release branches from the registry
+    branch_choices = list(dict.fromkeys(
+        [default_branch] + meta.get("release_branches", [])
+    ))
+    if len(branch_choices) > 1 or not NO_TTY:
+        branch = questionary.select(
+            "Branch to release from:",
+            choices=branch_choices,
+        ).ask() if len(branch_choices) > 1 else branch_choices[0]
+    else:
+        branch = default_branch
+
+    # Infer versions from pom.xml on disk (or the default branch if not yet cloned)
+    pom_version = read_pom_version(repo_dir)
+    default_release, default_next = infer_versions(pom_version) if pom_version else ("", "")
+    if pom_version:
+        Console().print(f"  [dim]pom.xml: {pom_version} → release {default_release}, next {default_next}[/dim]")
+
+    version = questionary.text("Release version:", default=default_release).ask()
     if not version:
         sys.exit(0)
 
-    m = re.match(r'^(.*?)(\d+)([^0-9]*)$', version)
-    default_next = (f"{m.group(1)}{int(m.group(2)) + 1}{m.group(3)}-SNAPSHOT"
-                    if m else f"{version}-SNAPSHOT")
+    # Re-infer next version from the chosen release version (user may have changed it)
+    _, auto_next = infer_versions(version + "-SNAPSHOT")
     next_version = questionary.text(
-        "Next development version:", default=default_next
+        "Next development version:", default=auto_next
     ).ask()
     if not next_version:
         sys.exit(0)
@@ -1047,12 +1067,33 @@ def wizard_collect_inputs():
     if selected_steps is None:
         sys.exit(0)
 
-    return project, version, next_version, selected_steps
+    return project, version, next_version, branch, selected_steps
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def build_context(project, version, next_version):
+def read_pom_version(repo_dir):
+    """Read <version> from pom.xml in repo_dir. Returns e.g. '4.0.0-beta-7-SNAPSHOT'."""
+    pom = Path(repo_dir) / "pom.xml"
+    if not pom.exists():
+        return ""
+    text = pom.read_text()
+    m = re.search(r"<version>([^<]+)</version>", text)
+    return m.group(1).strip() if m else ""
+
+
+def infer_versions(pom_version):
+    """Given a SNAPSHOT pom version, return (release_version, next_dev_version)."""
+    v = pom_version.removesuffix("-SNAPSHOT")
+    # bump the last numeric segment for the next dev version
+    m = re.match(r'^(.*?)(\d+)([^0-9]*)$', v)
+    next_v = (f"{m.group(1)}{int(m.group(2)) + 1}{m.group(3)}-SNAPSHOT"
+              if m else f"{v}-SNAPSHOT")
+    return v, next_v
+
+
+
+def build_context(project, version, next_version, branch="master"):
     meta = PROJECTS[project]
     repo     = f"apache/{project}"
     repo_dir = Path(os.path.join(REPOS_DIR, project))
@@ -1069,6 +1110,7 @@ def build_context(project, version, next_version):
         "groupId":               meta["groupId"],
         "display_name":          meta["display_name"],
         "release_drafter_wf_id": meta["release_drafter_wf_id"],
+        "branch":                meta.get("default_branch", branch),
         "atr_url":               "https://releases.apache.org",
         "local_repo":            Path(f"{HOME}/.m2/repository-release-{project}-{version}"),
         "log_dir":               log_dir,
@@ -1117,6 +1159,8 @@ def main():
                              "--version, and --step or --all.")
     parser.add_argument("--project", help="Project name (GitHub repo without 'apache/')")
     parser.add_argument("--version", help="Version to release (e.g. 4.0.0-beta-6)")
+    parser.add_argument("--branch", default="master",
+                        help="Branch to release from (default: master)")
     parser.add_argument("--next-version", help="Next dev version (auto-inferred if omitted)")
     parser.add_argument("--step", choices=list(STEPS.keys()), help="Run a specific step only")
     parser.add_argument("--all", action="store_true", help="Run all steps in order")
@@ -1141,25 +1185,26 @@ def main():
                         (f"{m.group(1)}{int(m.group(2)) + 1}{m.group(3)}-SNAPSHOT"
                          if m else f"{version}-SNAPSHOT"))
 
-        build_context(args.project, version, next_version)
+        build_context(args.project, version, next_version, args.branch)
 
         if args.step:
             STEPS[args.step][0]()
         else:
             run_steps(list(STEPS.keys()))
     else:
-        project, version, next_version, selected_steps = wizard_collect_inputs()
+        project, version, next_version, branch, selected_steps = wizard_collect_inputs()
 
         if project not in PROJECTS:
             sys.exit(f"\u274c Unknown project '{project}'")
 
-        build_context(project, version, next_version)
+        build_context(project, version, next_version, branch)
 
         c = ctx()
         from rich.table import Table
         from rich.console import Console
         t = Table(title="Release plan", show_header=False, box=None, padding=(0, 2))
         t.add_row("Project",  c["display_name"])
+        t.add_row("Branch",   c["branch"])
         t.add_row("Version",  c["version"])
         t.add_row("Next dev", c["next_version"])
         t.add_row("Tag",      c["tag"])
