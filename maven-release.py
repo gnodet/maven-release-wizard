@@ -748,6 +748,18 @@ def step_prereqs():
         else:
             errors.append("gitbox credential verification failed")
             tui_err("gitbox credential verification failed")
+
+        # Verify push access with a dry-run
+        push_test = subprocess.run(
+            ["git", "push", "--dry-run", "origin", "HEAD"],
+            capture_output=True, text=True, cwd=c["repo_dir"]
+        )
+        if push_test.returncode == 0:
+            tui_ok("Push access verified (dry-run)")
+        else:
+            err_msg = (push_test.stderr or push_test.stdout).strip().splitlines()[-1]
+            errors.append("git push dry-run failed")
+            tui_err(f"Push access failed: {err_msg}")
     except Exception as e:
         tui_warn(f"Could not set up git credentials: {e}")
 
