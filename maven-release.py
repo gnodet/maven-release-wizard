@@ -541,20 +541,69 @@ def step_prereqs():
     else:
         tui_ok("apache.atr server configured")
 
-    # 4. GPG key
+    # 4. GPG key — present, fingerprint extracted, in KEYS file, on keyserver
     print("\n4. Checking GPG signing key...")
-    result = subprocess.run(
-        ["gpg", "--list-secret-keys", "--keyid-format=long"],
+    gpg_result = subprocess.run(
+        ["gpg", "--list-secret-keys", "--with-colons", "--with-fingerprint"],
         env={**BASE_ENV, "GNUPGHOME": GNUPGHOME}, capture_output=True, text=True
     )
-    if result.returncode == 0 and result.stdout.strip():
-        tui_ok("GPG signing key present")
-        lines = result.stdout.splitlines()
-        if len(lines) > 1:
-            print(f"   {lines[1]}")
-    else:
+    if gpg_result.returncode != 0 or not gpg_result.stdout.strip():
         errors.append("No GPG secret key found")
         tui_err("No GPG secret key \u2014 import your key first")
+    else:
+        # Extract fingerprints from colon output (fpr lines)
+        fingerprints = re.findall(r'^fpr:+([A-F0-9]{40}):', gpg_result.stdout, re.MULTILINE)
+        if not fingerprints:
+            errors.append("Could not extract GPG fingerprint")
+            tui_err("Could not extract GPG fingerprint from gpg output")
+        else:
+            fpr = fingerprints[0]
+            tui_ok(f"GPG secret key found: {fpr}")
+
+            # 4a. Key in dist.apache.org KEYS file
+            print(f"   Checking KEYS file for {fpr}...")
+            try:
+                req = urllib.request.Request(
+                    "https://dist.apache.org/repos/dist/release/maven/KEYS"
+                )
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    keys_text = r.read().decode(errors="replace")
+                # Look for last 16 chars of fingerprint (key ID) or full fingerprint
+                key_id_16 = fpr[-16:]
+                key_id_8  = fpr[-8:]
+                if fpr in keys_text or key_id_16 in keys_text or key_id_8 in keys_text:
+                    tui_ok("Key found in dist.apache.org/repos/dist/release/maven/KEYS")
+                else:
+                    errors.append(f"GPG key {fpr} NOT found in Maven KEYS file")
+                    tui_err(f"Key {fpr} not in KEYS file!")
+                    tui_warn("Add it: gpg --list-sigs <keyid> >> KEYS && gpg --armor --export <keyid> >> KEYS")
+                    tui_link("KEYS file", "https://github.com/apache/maven-parent/blob/master/KEYS")
+            except Exception as e:
+                tui_warn(f"Could not fetch KEYS file: {e}")
+
+            # 4b. Key published on keyserver
+            print(f"   Checking keys.openpgp.org for {fpr}...")
+            try:
+                ks_req = urllib.request.Request(
+                    f"https://keys.openpgp.org/vks/v1/by-fingerprint/{fpr}"
+                )
+                with urllib.request.urlopen(ks_req, timeout=15) as r:
+                    if r.status == 200:
+                        tui_ok("Key published on keys.openpgp.org")
+                    else:
+                        raise Exception(f"HTTP {r.status}")
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    errors.append(f"GPG key {fpr} not published on keys.openpgp.org")
+                    tui_err("Key not on keys.openpgp.org \u2014 upload it:")
+                    tui_warn("gpg --export " + fpr + " | curl -T - https://keys.openpgp.org")
+                else:
+                    tui_warn(f"Keyserver check failed: {e}")
+            except Exception as e:
+                tui_warn(f"Could not reach keyserver: {e}")
+
+            # Store fingerprint in context for later use
+            CTX["gpg_fingerprint"] = fpr
 
     # 5. Nexus clean
     print("\n5. Checking Nexus for stale staging repos...")
@@ -594,6 +643,73 @@ def step_prereqs():
             tui_err("gitbox credential verification failed")
     except Exception as e:
         tui_warn(f"Could not set up gitbox credential: {e}")
+
+    # 7. ATR — project exists and current user is an authorized releaser
+    print("\n7. Checking ATR project and releaser authorization...")
+    try:
+        project_key = c["project"]
+        atr_project = atr_api(f"/projects/{project_key}")
+        tui_ok(f"ATR project '{project_key}' exists")
+        # Check releaser list
+        releasers = atr_api(f"/projects/{project_key}/releasers")
+        releaser_ids = [r.get("asf_uid") or r.get("id") or r.get("username") or ""
+                        for r in (releasers if isinstance(releasers, list)
+                                  else releasers.get("releasers", []))]
+        if apache_id and releaser_ids and apache_id not in releaser_ids:
+            errors.append(f"'{apache_id}' not in ATR releaser list for {project_key}")
+            tui_err(f"You ({apache_id}) are not an authorized ATR releaser")
+            tui_warn(f"Authorized: {', '.join(releaser_ids)}")
+        elif apache_id and releaser_ids:
+            tui_ok(f"'{apache_id}' is an authorized ATR releaser")
+        else:
+            tui_warn("Could not verify ATR releaser list (empty or unexpected format)")
+    except Exception as e:
+        tui_warn(f"Could not verify ATR project/releasers: {e}")
+
+    # 8. Java version
+    print("\n8. Checking Java version...")
+    try:
+        java_bin = (Path(JAVA_HOME) / "bin" / "java") if JAVA_HOME else shutil.which("java") or "java"
+        java_result = subprocess.run(
+            [str(java_bin), "-version"],
+            capture_output=True, text=True, env=BASE_ENV
+        )
+        java_ver_str = (java_result.stderr or java_result.stdout).splitlines()[0]
+        m = re.search(r'"(\d+)(?:\.(\d+))?', java_ver_str)
+        if m:
+            major = int(m.group(1))
+            if major == 1:
+                major = int(m.group(2) or 0)
+            if major >= 11:
+                tui_ok(f"Java {major} \u2014 {java_ver_str.strip()}")
+            else:
+                errors.append(f"Java {major} is too old (need \u2265 11)")
+                tui_err(f"Java {major} too old \u2014 set JAVA_HOME to JDK 11+")
+        else:
+            tui_warn(f"Could not parse Java version: {java_ver_str}")
+    except Exception as e:
+        tui_warn(f"Could not check Java: {e}")
+
+    # 9. Maven version
+    print("\n9. Checking Maven version...")
+    try:
+        mvn_result = subprocess.run(
+            [MVN, "--version"],
+            capture_output=True, text=True, env=BASE_ENV
+        )
+        mvn_ver_str = (mvn_result.stdout or mvn_result.stderr).splitlines()[0]
+        m = re.search(r'Apache Maven (\d+)\.(\d+)\.(\d+)', mvn_ver_str)
+        if m:
+            major, minor, patch_v = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if (major, minor, patch_v) >= (3, 6, 3):
+                tui_ok(f"Maven {major}.{minor}.{patch_v} \u2014 {mvn_ver_str.strip()}")
+            else:
+                errors.append(f"Maven {major}.{minor}.{patch_v} is too old (need \u2265 3.6.3)")
+                tui_err(f"Maven {major}.{minor}.{patch_v} too old \u2014 upgrade to 3.6.3+")
+        else:
+            tui_warn(f"Could not parse Maven version: {mvn_ver_str}")
+    except Exception as e:
+        tui_warn(f"Could not check Maven: {e}")
 
     if errors:
         tui_err(f"Prerequisites FAILED ({len(errors)} issue(s)):")
