@@ -176,16 +176,23 @@ def _ensure_deps():
     # Re-launch inside the venv as a subprocess (not execv — execv silently
     # fails when stdin/stdout are weird, e.g. bash process substitution).
     # Always re-fetch from GitHub unless running from a local git checkout.
-    import tempfile, urllib.request as _ur
+    # Use the API endpoint (no CDN caching) instead of raw.githubusercontent.com.
+    import tempfile, urllib.request as _ur, base64 as _b64
     stable = os.path.join(tempfile.gettempdir(), "maven-release.py")
-    url = ("https://raw.githubusercontent.com/gnodet/maven-release-wizard"
-           "/main/maven-release.py")
     script_path = os.path.abspath(sys.argv[0]) if sys.argv else ""
     is_local_checkout = (script_path and os.path.isfile(script_path)
                          and os.path.abspath(script_path) != os.path.abspath(stable))
     if not is_local_checkout:
         print("Re-fetching script from GitHub ...")
-        _ur.urlretrieve(url, stable)
+        try:
+            api_url = "https://api.github.com/repos/gnodet/maven-release-wizard/contents/maven-release.py"
+            req = _ur.Request(api_url, headers={"Accept": "application/vnd.github.raw+json"})
+            with _ur.urlopen(req) as r:
+                Path(stable).write_bytes(r.read())
+        except Exception:
+            _ur.urlretrieve(
+                "https://raw.githubusercontent.com/gnodet/maven-release-wizard/main/maven-release.py",
+                stable)
         script_path = stable
     print("Re-launching inside venv...")
     # Pass VIRTUAL_ENV so the child knows it's already inside our venv
