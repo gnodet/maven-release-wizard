@@ -89,6 +89,8 @@ PROJECTS = {
 #   export JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home
 #   export APACHE_LLM_TOKEN=sk-...    # llm.apache.org token for release summary generation
 
+SCRIPT_VERSION = "3da1774"  # git commit — update on release or use for staleness check
+
 HOME      = os.path.expanduser("~")
 MVN       = os.environ.get("MAVEN_RELEASE_MVN",      shutil.which("mvn") or "mvn")
 JAVA_HOME = os.environ.get("JAVA_HOME",              "")
@@ -173,15 +175,15 @@ def _ensure_deps():
 
     # Re-launch inside the venv as a subprocess (not execv — execv silently
     # fails when stdin/stdout are weird, e.g. bash process substitution).
-    # When run via process substitution, sys.argv[0] is something like /dev/fd/63
-    # which won't exist on re-launch.  Always fetch the latest from GitHub in
-    # that case so we never run a stale cached copy from a previous session.
+    # Always re-fetch from GitHub unless running from a local git checkout.
+    import tempfile, urllib.request as _ur
+    stable = os.path.join(tempfile.gettempdir(), "maven-release.py")
+    url = ("https://raw.githubusercontent.com/gnodet/maven-release-wizard"
+           "/main/maven-release.py")
     script_path = os.path.abspath(sys.argv[0]) if sys.argv else ""
-    if not script_path or not os.path.isfile(script_path):
-        import tempfile, urllib.request as _ur
-        stable = os.path.join(tempfile.gettempdir(), "maven-release.py")
-        url = ("https://raw.githubusercontent.com/gnodet/maven-release-wizard"
-               "/main/maven-release.py")
+    is_local_checkout = (script_path and os.path.isfile(script_path)
+                         and os.path.abspath(script_path) != os.path.abspath(stable))
+    if not is_local_checkout:
         print("Re-fetching script from GitHub ...")
         _ur.urlretrieve(url, stable)
         script_path = stable
@@ -205,7 +207,7 @@ def tui_header():
     from rich.panel import Panel
     from rich.text import Text
     c = console()
-    t = Text("\U0001f680 Maven Release Wizard", style="bold cyan")
+    t = Text(f"\U0001f680 Maven Release Wizard ({SCRIPT_VERSION})", style="bold cyan")
     c.print(Panel(t, border_style="cyan"))
 
 
