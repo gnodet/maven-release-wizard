@@ -87,6 +87,7 @@ PROJECTS = {
 #   export MAVEN_RELEASE_GH_TOKEN=~/.config/gh/token
 #   export GNUPGHOME=~/.gnupg
 #   export JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home
+#   export APACHE_LLM_TOKEN=sk-...    # llm.apache.org token for release summary generation
 
 HOME      = os.path.expanduser("~")
 MVN       = os.environ.get("MAVEN_RELEASE_MVN",      shutil.which("mvn") or "mvn")
@@ -465,6 +466,50 @@ def gh_pom_version(project, branch="HEAD"):
         m = re.search(r"<version>([^<]+)</version>", text_no_parent)
         return m.group(1).strip() if m else ""
     except Exception:
+        return ""
+
+
+def _generate_release_summary(c, body):
+    """Use llm.apache.org to generate a short release summary from the changelog."""
+    llm_token = os.environ.get("APACHE_LLM_TOKEN", "")
+    if not llm_token:
+        tui_warn("APACHE_LLM_TOKEN not set — skipping release summary generation")
+        return ""
+    prompt = (
+        f"You are writing release notes for {c['display_name']} version {c['version']}. "
+        f"Below is the changelog generated from merged pull requests. "
+        f"Write a concise summary (3-5 sentences) highlighting the most important changes "
+        f"for users. Focus on bug fixes and improvements, not dependency bumps or CI changes. "
+        f"Do not use markdown headers. Do not repeat the full changelog.\n\n"
+        f"{body}"
+    )
+    try:
+        req = urllib.request.Request(
+            "https://llm.apache.org/v1/chat/completions",
+            data=json.dumps({
+                "model": "gemma4-26b",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+                "max_tokens": 300,
+            }).encode(),
+            headers={
+                "Authorization": f"Bearer {llm_token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.load(r)
+        summary = data["choices"][0]["message"]["content"].strip()
+        print(f"\n   Generated summary:\n")
+        for line in summary.splitlines():
+            print(f"   {line}")
+        print()
+        if NO_TTY or confirm_action("Add this summary to the release notes?"):
+            return summary
+        return ""
+    except Exception as e:
+        tui_warn(f"LLM summary generation failed: {e}")
         return ""
 
 
@@ -974,9 +1019,22 @@ def step_vote():
         body = rel.get("body") or ""
 
     PLACEHOLDER = "<!-- Optional: add a release summary here -->"
+    if PLACEHOLDER in body:
+        summary = _generate_release_summary(c, body)
+        if summary:
+            body = body.replace(PLACEHOLDER, summary)
+            if draft_id:
+                print("   Updating draft release with summary...")
+                gh_api(f"/repos/{c['repo']}/releases/{draft_id}",
+                       method="PATCH", data={"body": body})
+                tui_ok("Draft release updated with summary")
+
     gist_body = body.replace(PLACEHOLDER, "").strip()
     gist_body = f"# {c['display_name']} {c['version']}\n\n{gist_body}\n"
 
+    if draft_id:
+        tui_link("Review release notes",
+                 f"https://github.com/{c['repo']}/releases/tag/{c['tag']}")
     if not NO_TTY:
         print("\n   Release notes preview (first 20 lines):")
         for line in gist_body.splitlines()[:20]:
