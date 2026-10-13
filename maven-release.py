@@ -721,18 +721,13 @@ def step_prereqs():
     except Exception as e:
         tui_warn(f"Could not check Nexus: {e}")
 
-    # 6. Git credentials (GitHub + gitbox)
+    # 6. Git credentials + push URL via gitbox
     print("\n6. Setting up git credentials...")
     try:
-        # GitHub: use gh CLI as credential helper
-        gh = shutil.which("gh")
-        if gh:
-            run(["git", "config", "--local",
-                 "credential.https://github.com.helper",
-                 f"!{gh} auth git-credential"])
-            tui_ok("GitHub credential configured (gh auth)")
-        else:
-            tui_warn("gh CLI not found — GitHub push may fail")
+        # Set push URL to gitbox (Apache GitHub repos don't accept direct HTTPS pushes)
+        gitbox_url = f"https://gitbox.apache.org/repos/asf/{c['project']}.git"
+        run(["git", "remote", "set-url", "--push", "origin", gitbox_url])
+        tui_ok(f"Push URL set to gitbox")
 
         # Gitbox: use stored credentials
         apache_pass = read_apache_password()
