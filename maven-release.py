@@ -22,7 +22,7 @@ Steps (run in order):
 Project registry (add new projects in the PROJECTS dict below).
 """
 
-import sys, os, re, subprocess, json, urllib.request, urllib.parse, argparse, time, shutil
+import sys, os, re, subprocess, json, urllib.request, urllib.parse, argparse, time, shutil, hashlib
 from pathlib import Path
 
 # ── Project registry ────────────────────────────────────────────────────────────
@@ -89,7 +89,7 @@ PROJECTS = {
 #   export JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home
 #   export APACHE_LLM_TOKEN=sk-...    # llm.apache.org token for release summary generation
 
-SCRIPT_VERSION = "3da1774"  # git commit — update on release or use for staleness check
+SCRIPT_VERSION = hashlib.md5(Path(__file__).read_bytes()).hexdigest()[:8]
 
 HOME      = os.path.expanduser("~")
 MVN       = os.environ.get("MAVEN_RELEASE_MVN",      shutil.which("mvn") or "mvn")
