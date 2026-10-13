@@ -721,12 +721,13 @@ def step_prereqs():
     except Exception as e:
         tui_warn(f"Could not check Nexus: {e}")
 
-    # 6. Git push access
+    # 6. Git push access (rewrite HTTPS to SSH so the release plugin can push)
     print("\n6. Checking push access...")
     try:
-        # Ensure push URL uses SSH (HTTPS pushes to Apache GitHub repos require extra setup)
-        ssh_url = f"git@github.com:apache/{c['project']}.git"
-        run(["git", "remote", "set-url", "--push", "origin", ssh_url])
+        # Rewrite HTTPS GitHub URLs to SSH for push operations
+        run(["git", "config", "--local",
+             "url.git@github.com:.pushInsteadOf",
+             "https://github.com/"])
 
         # Verify push access with a dry-run
         push_test = subprocess.run(
@@ -829,9 +830,7 @@ def step_prepare():
     gpg_args = f" -Dgpg.passphrase={gpg_pass} -Dgpg.pinentryMode=loopback"
     if gpg_key:
         gpg_args += f" -Dgpg.keyname={gpg_key}"
-    ssh_scm = f"scm:git:git@github.com:apache/{c['project']}.git"
     common = [f"-Dmaven.repo.local={c['local_repo']}",
-              f"-DdeveloperConnectionUrl={ssh_scm}",
               f"-Darguments=-Dmaven.repo.local={c['local_repo']}" + gpg_args]
 
     print("\n3. Dry run...")
