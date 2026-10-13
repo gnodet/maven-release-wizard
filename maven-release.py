@@ -1125,10 +1125,21 @@ def step_vote():
     staged_site = f"https://maven.apache.org/{archives}/{c['project']}-{c['version']}/"
     apache_id = read_apache_id()
 
+    atr_vote_url = f"{c['atr_url']}/vote/{c['project']}/{c['version']}"
+
     vote_email = f"""To: dev@maven.apache.org
 Subject: [VOTE] Release {c['display_name']} version {c['version']}
 
-Hi,
+Hello Maven,
+
+I'd like to call a vote on releasing the following artifacts as \
+{c['display_name']} {c['version']}.
+
+The release candidate page, including downloads, can be found at:
+{atr_vote_url}
+
+The release artifacts are signed with one or more OpenPGP keys from:
+https://downloads.apache.org/maven/KEYS
 
 Release notes:
 {gist_url}
@@ -1146,13 +1157,18 @@ Staging site:
 Guide to testing staged releases:
 https://maven.apache.org/guides/development/guide-testing-releases.html
 
-Vote open for at least 72 hours.
+Please review the release candidate and vote accordingly.
 
-[ ] +1
-[ ] +0
-[ ] -1
+[ ] +1 Release this package
+[ ] +0 Abstain
+[ ] -1 Do not release this package (please provide specific comments)
 
--{apache_id}
+You can vote on ATR at the URL above, or manually by replying to this email.
+
+The vote is open for 72 hours.
+
+Thanks,
+{apache_id}
 """
 
     vote_file = c["log_dir"] / "vote-email.txt"
