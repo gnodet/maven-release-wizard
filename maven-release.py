@@ -449,10 +449,19 @@ def gh_asf_yaml(project, branch="HEAD"):
         data = gh_api(f"/repos/apache/{project}/contents/.asf.yaml?ref={branch}")
         text = base64.b64decode(data["content"]).decode()
 
-        # protected_branches
-        pb_block = re.search(r'protected_branches:\s*\n((?:[ \t]+\S.*\n?)*)', text)
-        protected = (re.findall(r'^[ \t]+(\S+)\s*:', pb_block.group(1), re.MULTILINE)
-                     if pb_block else [])
+        # protected_branches — capture only lines indented deeper than the key itself
+        pb_match = re.search(r'^( +)protected_branches:\s*\n', text, re.MULTILINE)
+        protected = []
+        if pb_match:
+            indent = len(pb_match.group(1))
+            block_lines = []
+            for line in text[pb_match.end():].splitlines():
+                if line.strip() == "" or (len(line) - len(line.lstrip()) > indent):
+                    block_lines.append(line)
+                else:
+                    break
+            block = "\n".join(block_lines)
+            protected = re.findall(r'^\s+(\S+)\s*:', block, re.MULTILINE)
 
         # download_path_suffix  (under project.policy)
         m = re.search(r'download_path_suffix:\s*(\S+)', text)
