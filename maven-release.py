@@ -543,67 +543,87 @@ def step_prereqs():
 
     # 4. GPG key — present, fingerprint extracted, in KEYS file, on keyserver
     print("\n4. Checking GPG signing key...")
-    gpg_result = subprocess.run(
-        ["gpg", "--list-secret-keys", "--with-colons", "--with-fingerprint"],
-        env={**BASE_ENV, "GNUPGHOME": GNUPGHOME}, capture_output=True, text=True
+    fpr = None
+    # Prefer git config user.signingkey if set
+    git_sk = subprocess.run(
+        ["git", "config", "user.signingkey"],
+        capture_output=True, text=True, cwd=c["repo_dir"]
     )
-    if gpg_result.returncode != 0 or not gpg_result.stdout.strip():
-        errors.append("No GPG secret key found")
-        tui_err("No GPG secret key \u2014 import your key first")
-    else:
-        # Extract fingerprints from colon output (fpr lines)
-        fingerprints = re.findall(r'^fpr:+([A-F0-9]{40}):', gpg_result.stdout, re.MULTILINE)
-        if not fingerprints:
-            errors.append("Could not extract GPG fingerprint")
-            tui_err("Could not extract GPG fingerprint from gpg output")
+    if git_sk.returncode == 0 and git_sk.stdout.strip():
+        configured_key = git_sk.stdout.strip().upper().replace("0X", "")
+        resolve = subprocess.run(
+            ["gpg", "--list-secret-keys", "--with-colons", "--with-fingerprint", configured_key],
+            env={**BASE_ENV, "GNUPGHOME": GNUPGHOME}, capture_output=True, text=True
+        )
+        resolved = re.findall(r'^fpr:+([A-F0-9]{40}):', resolve.stdout, re.MULTILINE)
+        if resolved:
+            fpr = resolved[0]
+            tui_ok(f"GPG signing key (from git config user.signingkey): {fpr}")
         else:
-            fpr = fingerprints[0]
-            tui_ok(f"GPG secret key found: {fpr}")
+            tui_warn(f"git config user.signingkey is '{git_sk.stdout.strip()}' but no matching secret key found")
+    if not fpr:
+        gpg_result = subprocess.run(
+            ["gpg", "--list-secret-keys", "--with-colons", "--with-fingerprint"],
+            env={**BASE_ENV, "GNUPGHOME": GNUPGHOME}, capture_output=True, text=True
+        )
+        if gpg_result.returncode != 0 or not gpg_result.stdout.strip():
+            errors.append("No GPG secret key found")
+            tui_err("No GPG secret key \u2014 import your key first")
+        else:
+            fingerprints = re.findall(r'^fpr:+([A-F0-9]{40}):', gpg_result.stdout, re.MULTILINE)
+            if not fingerprints:
+                errors.append("Could not extract GPG fingerprint")
+                tui_err("Could not extract GPG fingerprint from gpg output")
+            elif len(fingerprints) == 1:
+                fpr = fingerprints[0]
+                tui_ok(f"GPG secret key found: {fpr}")
+            else:
+                errors.append("Multiple GPG secret keys found; set git config user.signingkey to select one")
+                tui_err(f"Found {len(fingerprints)} secret keys \u2014 set git config user.signingkey to select one")
+                tui_warn("Example: git config --global user.signingkey <FINGERPRINT>")
+    if fpr is not None:
+        # 4a. Key in dist.apache.org KEYS file
+        print(f"   Checking KEYS file for {fpr}...")
+        try:
+            req = urllib.request.Request(
+                "https://dist.apache.org/repos/dist/release/maven/KEYS"
+            )
+            with urllib.request.urlopen(req, timeout=15) as r:
+                keys_text = r.read().decode(errors="replace")
+            key_id_16 = fpr[-16:]
+            key_id_8  = fpr[-8:]
+            if fpr in keys_text or key_id_16 in keys_text or key_id_8 in keys_text:
+                tui_ok("Key found in dist.apache.org/repos/dist/release/maven/KEYS")
+            else:
+                errors.append(f"GPG key {fpr} NOT found in Maven KEYS file")
+                tui_err(f"Key {fpr} not in KEYS file!")
+                tui_warn("Add it: gpg --list-sigs <keyid> >> KEYS && gpg --armor --export <keyid> >> KEYS")
+                tui_link("KEYS file", "https://github.com/apache/maven-parent/blob/master/KEYS")
+        except Exception as e:
+            tui_warn(f"Could not fetch KEYS file: {e}")
 
-            # 4a. Key in dist.apache.org KEYS file
-            print(f"   Checking KEYS file for {fpr}...")
-            try:
-                req = urllib.request.Request(
-                    "https://dist.apache.org/repos/dist/release/maven/KEYS"
-                )
-                with urllib.request.urlopen(req, timeout=15) as r:
-                    keys_text = r.read().decode(errors="replace")
-                # Look for last 16 chars of fingerprint (key ID) or full fingerprint
-                key_id_16 = fpr[-16:]
-                key_id_8  = fpr[-8:]
-                if fpr in keys_text or key_id_16 in keys_text or key_id_8 in keys_text:
-                    tui_ok("Key found in dist.apache.org/repos/dist/release/maven/KEYS")
+        # 4b. Key published on keyserver
+        print(f"   Checking keys.openpgp.org for {fpr}...")
+        try:
+            ks_req = urllib.request.Request(
+                f"https://keys.openpgp.org/vks/v1/by-fingerprint/{fpr}"
+            )
+            with urllib.request.urlopen(ks_req, timeout=15) as r:
+                if r.status == 200:
+                    tui_ok("Key published on keys.openpgp.org")
                 else:
-                    errors.append(f"GPG key {fpr} NOT found in Maven KEYS file")
-                    tui_err(f"Key {fpr} not in KEYS file!")
-                    tui_warn("Add it: gpg --list-sigs <keyid> >> KEYS && gpg --armor --export <keyid> >> KEYS")
-                    tui_link("KEYS file", "https://github.com/apache/maven-parent/blob/master/KEYS")
-            except Exception as e:
-                tui_warn(f"Could not fetch KEYS file: {e}")
+                    raise Exception(f"HTTP {r.status}")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                errors.append(f"GPG key {fpr} not published on keys.openpgp.org")
+                tui_err("Key not on keys.openpgp.org \u2014 upload it:")
+                tui_warn("gpg --export " + fpr + " | curl -T - https://keys.openpgp.org")
+            else:
+                tui_warn(f"Keyserver check failed: {e}")
+        except Exception as e:
+            tui_warn(f"Could not reach keyserver: {e}")
 
-            # 4b. Key published on keyserver
-            print(f"   Checking keys.openpgp.org for {fpr}...")
-            try:
-                ks_req = urllib.request.Request(
-                    f"https://keys.openpgp.org/vks/v1/by-fingerprint/{fpr}"
-                )
-                with urllib.request.urlopen(ks_req, timeout=15) as r:
-                    if r.status == 200:
-                        tui_ok("Key published on keys.openpgp.org")
-                    else:
-                        raise Exception(f"HTTP {r.status}")
-            except urllib.error.HTTPError as e:
-                if e.code == 404:
-                    errors.append(f"GPG key {fpr} not published on keys.openpgp.org")
-                    tui_err("Key not on keys.openpgp.org \u2014 upload it:")
-                    tui_warn("gpg --export " + fpr + " | curl -T - https://keys.openpgp.org")
-                else:
-                    tui_warn(f"Keyserver check failed: {e}")
-            except Exception as e:
-                tui_warn(f"Could not reach keyserver: {e}")
-
-            # Store fingerprint in context for later use
-            CTX["gpg_fingerprint"] = fpr
+        CTX["gpg_fingerprint"] = fpr
 
     # 5. Nexus clean
     print("\n5. Checking Nexus for stale staging repos...")
@@ -751,9 +771,12 @@ def step_prepare():
                    env=c["env"], capture_output=True)
 
     gpg_pass = get_gpg_passphrase()
+    gpg_key = CTX.get("gpg_fingerprint", "")
+    gpg_args = f" -Dgpg.passphrase={gpg_pass} -Dgpg.pinentryMode=loopback"
+    if gpg_key:
+        gpg_args += f" -Dgpg.keyname={gpg_key}"
     common = [f"-Dmaven.repo.local={c['local_repo']}",
-              f"-Darguments=-Dmaven.repo.local={c['local_repo']}"
-              f" -Dgpg.passphrase={gpg_pass} -Dgpg.pinentryMode=loopback"]
+              f"-Darguments=-Dmaven.repo.local={c['local_repo']}" + gpg_args]
 
     print("\n3. Dry run...")
     run([MVN, "release:clean", "-B", f"-Dmaven.repo.local={c['local_repo']}"])
@@ -797,12 +820,16 @@ def step_perform():
     gpg_pass = get_gpg_passphrase()
     checkout_dir = c["repo_dir"] / "target" / "checkout"
 
+    gpg_key = CTX.get("gpg_fingerprint", "")
+    gpg_args = f" -Dgpg.passphrase={gpg_pass} -Dgpg.pinentryMode=loopback"
+    if gpg_key:
+        gpg_args += f" -Dgpg.keyname={gpg_key}"
+
     print("\n1. Running release:perform (checkout phase)...")
     subprocess.run([
         MVN, "release:perform", "-B",
         f"-Dmaven.repo.local={c['local_repo']}",
-        f"-Darguments=-Dmaven.repo.local={c['local_repo']}"
-        f" -Dgpg.passphrase={gpg_pass} -Dgpg.pinentryMode=loopback",
+        f"-Darguments=-Dmaven.repo.local={c['local_repo']}" + gpg_args,
     ], cwd=c["repo_dir"], env=c["env"], capture_output=True, text=True)
 
     if not checkout_dir.exists():
@@ -819,7 +846,7 @@ def step_perform():
             tui_warn(f"ATR release/create: {e} \u2014 will rely on -Datr.createVersion=true")
 
     print("\n3. Deploying from target/checkout to Nexus + ATR...")
-    run([
+    deploy_cmd = [
         MVN, "deploy", "-B",
         f"-Dmaven.repo.local={c['local_repo']}",
         f"-Dgpg.passphrase={gpg_pass}",
@@ -827,7 +854,10 @@ def step_perform():
         "-s", SETTINGS,
         "-Papache-release,push-to-atr",
         "-Datr.createVersion=true",
-    ], cwd=checkout_dir, log_file=c["log_dir"] / "deploy.log")
+    ]
+    if gpg_key:
+        deploy_cmd.append(f"-Dgpg.keyname={gpg_key}")
+    run(deploy_cmd, cwd=checkout_dir, log_file=c["log_dir"] / "deploy.log")
 
     source_zip = checkout_dir / "target" / f"{c['project']}-{c['version']}-source-release.zip"
     if source_zip.exists():
