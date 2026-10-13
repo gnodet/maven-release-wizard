@@ -1036,18 +1036,28 @@ def wizard_collect_inputs():
     meta = PROJECTS[project]
     Console().print(f"  [dim]{meta['display_name']} ({meta['category']})[/dim]")
 
-    # Branch — fetch default + maintenance branches from GitHub
+    # Branch — read protected_branches from .asf.yaml (the authoritative list)
     repo_dir = Path(os.path.join(REPOS_DIR, project))
     Console().print("  [dim]Fetching repo info from GitHub...[/dim]")
     try:
         repo_info = gh_api(f"/repos/apache/{project}")
         default_branch = repo_info.get("default_branch", "master")
-        branches_data = gh_api(f"/repos/apache/{project}/branches?per_page=100")
-        branch_names = [b["name"] for b in branches_data]
-        # Maintenance branches: <anything>-N.x, N.x, N.N.x — not feature/fix/dependabot
-        maint_re = re.compile(r'^.+-\d+(\.\d+)*\.x$|^\d+(\.\d+)*\.x$')
-        extra = [b for b in branch_names if b != default_branch and maint_re.match(b)]
-        branch_choices = [default_branch] + sorted(extra, reverse=True)
+        # Parse .asf.yaml for protected_branches — the authoritative release branch list
+        asf_yaml_data = gh_api(f"/repos/apache/{project}/contents/.asf.yaml")
+        import base64
+        asf_text = base64.b64decode(asf_yaml_data["content"]).decode()
+        # Extract protected_branches keys (simple line-based parse, no yaml dep needed)
+        protected = re.findall(r'^\s{4}(\S+)\s*:', asf_text, re.MULTILINE)
+        # Only keep lines inside the protected_branches block
+        pb_block = re.search(r'protected_branches:\s*\n((?:\s{4}\S.*\n?)*)', asf_text)
+        if pb_block:
+            protected = re.findall(r'^\s+(\S+)\s*:', pb_block.group(1), re.MULTILINE)
+        else:
+            protected = [default_branch]
+        # default branch first, rest sorted descending
+        branch_choices = [default_branch] + sorted(
+            [b for b in protected if b != default_branch], reverse=True
+        )
     except Exception:
         branch_choices = ["master"]
         default_branch = "master"
