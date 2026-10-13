@@ -1192,10 +1192,15 @@ Thanks,
     except Exception as e:
         tui_warn(f"ATR vote/start failed: {e}")
         tui_link("Start vote manually", f"{c['atr_url']}/compose/{c['project']}/{c['version']}")
-        print(f"\n   Vote email content:\n")
-        for line in vote_email.splitlines():
-            print(f"   {line}")
-        print()
+        pbcopy = shutil.which("pbcopy")
+        if pbcopy:
+            subprocess.run([pbcopy], input=vote_email.encode(), check=False)
+            tui_ok("Vote email copied to clipboard")
+        else:
+            print(f"\n   Vote email content:\n")
+            for line in vote_email.splitlines():
+                print(f"   {line}")
+            print()
 
     tui_ok(f"Vote email saved to {vote_file}")
 
